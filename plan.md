@@ -38,7 +38,7 @@
 
 | Файл CryptoConsult | Путь | Изменения для BitTrend |
 |--------------------|------|------------------------|
-| Onchain | `CryptoConsult/backend/market_data/onchain.py` | Добавить MVRV Z-Score, NUPL (LookIntoBitcoin или Glassnode) |
+| Onchain | `CryptoConsult/backend/market_data/onchain.py` | MVRV, NUPL, SOPR: LookIntoBitcoin (парсинг) или fallback — pycoingecko + упрощённая модель (см. 8.10) |
 
 ### 2.4 Новая реализация
 
@@ -107,11 +107,11 @@ BitTrend/
 
 **API ключи (опционально):**
 - `FRED_API_KEY` — макро
-- `GLASSNODE_API_KEY` — MVRV, NUPL, SOPR
+- `GLASSNODE_API_KEY` — MVRV, NUPL, SOPR (не требуется при fallback через pycoingecko, см. 8.10)
 - `COINGLASS_API_KEY` — ETF flows
 
 **Бесплатные источники:**
-- Binance API, Alternative.me, LookIntoBitcoin (парсинг), Farside (парсинг)
+- Binance API, Alternative.me, LookIntoBitcoin (парсинг), Farside (парсинг), pycoingecko (упрощённый MVRV/NUPL/SOPR)
 
 ---
 
@@ -228,6 +228,7 @@ requests>=2.31.0
 plotly>=5.18.0
 python-dotenv>=1.0.0
 yfinance>=0.2.0    # DXY (Yahoo Finance)
+pycoingecko>=3.1.0 # Исторические цены BTC для упрощённого MVRV/NUPL/SOPR (fallback без Glassnode)
 ```
 
 Опционально: `ccxt` для унификации работы с биржами, `selenium` для парсинга LookIntoBitcoin при защите.
@@ -396,9 +397,9 @@ CACHE_TTL = 300
 
 | Метрика | Реально? | Источник |
 |---------|----------|----------|
-| MVRV | ✔ | парсинг LookIntoBitcoin |
-| NUPL | ✔ | парсинг LookIntoBitcoin |
-| SOPR | ✔ | парсинг LookIntoBitcoin |
+| MVRV | ✔ | парсинг LookIntoBitcoin или pycoingecko + упрощённая модель (8.10) |
+| NUPL | ✔ | парсинг LookIntoBitcoin или pycoingecko + упрощённая модель (8.10) |
+| SOPR | ✔ | парсинг LookIntoBitcoin или pycoingecko + упрощённая модель (8.10) |
 | MA200 | ✔ | считаешь из Binance |
 | Funding | ✔ | API Binance/Bybit |
 | OI | ✔ | API Binance/Bybit |
@@ -454,6 +455,97 @@ CACHE_TTL = 300
 
 #### Data contract
 - **OnchainMetrics** (TypedDict) — контракт для API
+
+---
+
+### 8.10 Практический способ получить MVRV, NUPL и SOPR без Glassnode API ✅
+
+**Контекст:** Все способы получения MVRV, NUPL и SOPR через Glassnode API не подходят. Используем только исторические цены BTC и упрощённые данные по движению монет.
+
+**Стек:** Python + pandas + pycoingecko + numpy. Упрощённая модель на дневных агрегатах — не идеально, но даёт приблизительные значения, достаточные для анализа.
+
+#### 1️⃣ Установка зависимостей
+
+```powershell
+pip install pandas pycoingecko numpy
+```
+
+#### 2️⃣ Получение исторических цен BTC
+
+```python
+from pycoingecko import CoinGeckoAPI
+import pandas as pd
+import numpy as np
+
+cg = CoinGeckoAPI()
+
+# Получаем исторические цены BTC за последние 3 года (дневные)
+data = cg.get_coin_market_chart_by_id(id='bitcoin', vs_currency='usd', days=1095)  # 3 года ~ 1095 дней
+
+prices = data['prices']  # [timestamp, price]
+df = pd.DataFrame(prices, columns=['timestamp', 'price'])
+df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+df.set_index('timestamp', inplace=True)
+
+print(df.head())
+```
+
+#### 3️⃣ Упрощённый MVRV
+
+Для приближённого расчёта Realized Value считаем, что каждая монета перемещается один раз в год. (На практике Glassnode считает каждое перемещение, но это сильно ускоряет расчёт.)
+
+```python
+# Допустим, circulating supply растёт линейно
+start_supply = 18000000  # 18 млн монет три года назад
+end_supply = 19600000    # 19.6 млн монет сейчас
+df['circulating_supply'] = np.linspace(start_supply, end_supply, len(df))
+
+# Market Value
+df['market_value'] = df['price'] * df['circulating_supply']
+
+# Realized Value (упрощённо: усреднённая цена за год на каждый день × supply)
+df['realized_value'] = df['price'].rolling(window=365, min_periods=1).mean() * df['circulating_supply']
+
+# MVRV
+df['mvrv'] = df['market_value'] / df['realized_value']
+
+print(df[['price', 'market_value', 'realized_value', 'mvrv']].tail())
+```
+
+#### 4️⃣ NUPL
+
+```python
+df['nupl'] = (df['market_value'] - df['realized_value']) / df['market_value']
+```
+
+#### 5️⃣ SOPR (упрощённо)
+
+Берём дневное среднее отношение цены сегодня к среднему за предыдущий год — приблизительно имитирует SOPR.
+
+```python
+df['sopr'] = df['price'] / df['price'].rolling(window=365, min_periods=1).mean()
+```
+
+#### 6️⃣ Итог
+
+```python
+print(df.tail())
+```
+
+**DataFrame содержит колонки:**
+
+| Колонка | Описание |
+|---------|----------|
+| `price` | Цена BTC |
+| `market_value` | Текущая капитализация |
+| `realized_value` | Упрощённая Realized Value |
+| `mvrv` | MVRV ratio |
+| `nupl` | Net Unrealized Profit/Loss |
+| `sopr` | Упрощённый SOPR |
+
+Можно строить графики через matplotlib или plotly и делать аналогичные анализы.
+
+**Интеграция:** Добавить `pycoingecko` в `requirements.txt`. Модуль `onchain.py` может использовать этот метод как fallback при недоступности LookIntoBitcoin.
 
 ---
 

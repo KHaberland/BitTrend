@@ -54,7 +54,7 @@ def _compute_and_store(usdt: float, btc_amount: float, btc_price: float):
     data["btc_price"] = btc_price  # актуальная цена
 
     scorer = BitTrendScorer()
-    score, signal, _ = scorer.compute(data)
+    score, signal, components = scorer.compute(data)
 
     btc_value_usdt = btc_amount * btc_price
     recommendation = generate_from_portfolio(
@@ -77,6 +77,8 @@ def _compute_and_store(usdt: float, btc_amount: float, btc_price: float):
     st.session_state.recommendation = recommendation
     st.session_state.parts = parts
     st.session_state.deviation_usdt = deviation_usdt
+    st.session_state.metrics_data = data
+    st.session_state.components = components
 
     # История сигналов (опционально)
     st.session_state.signal_history.append({
@@ -172,6 +174,38 @@ def main():
 
     recommendation = st.session_state.recommendation or "—"
     st.info(f"**Recommended Action:** {recommendation}")
+
+    # Метрики по порядку (1, 2, 3, …)
+    metrics_data = st.session_state.get("metrics_data") or data
+    components = st.session_state.get("components") or {}
+
+    def _fmt(val, fmt_str=".2f"):
+        if val is None:
+            return "—"
+        if isinstance(val, float):
+            return f"{val:{fmt_str}}"
+        return str(val)
+
+    metrics_list = [
+        (1, "MVRV Z-Score", metrics_data.get("mvrv_z_score"), "25%", components.get("mvrv_z_score")),
+        (2, "NUPL", metrics_data.get("nupl"), "15%", components.get("nupl")),
+        (3, "SOPR", metrics_data.get("sopr"), "10%", components.get("sopr")),
+        (4, "MA200", metrics_data.get("ma200"), "15%", components.get("ma200")),
+        (5, "Funding + OI", f"funding={_fmt(metrics_data.get('funding_rate'))}, OI 7d={_fmt(metrics_data.get('open_interest_7d_change_pct'))}%", "15%", components.get("derivatives")),
+        (6, "ETF flow 7d (USD)", metrics_data.get("etf_flow_7d_usd"), "15%", components.get("etf")),
+        (7, "Macro (signal)", metrics_data.get("macro_signal"), "10%", components.get("macro")),
+        (8, "Fear & Greed", metrics_data.get("fear_greed_value"), "5%", components.get("fear_greed")),
+    ]
+
+    with st.expander("📊 Все метрики (1–8)"):
+        for num, name, raw_val, weight, comp in metrics_list:
+            if isinstance(raw_val, str):
+                raw_str = raw_val
+            else:
+                raw_str = _fmt(raw_val, ",.0f") if isinstance(raw_val, (int, float)) and (raw_val or 0) > 1000 else _fmt(raw_val)
+            comp_str = f" → вклад {comp:+.0f}" if comp is not None else ""
+            weight_str = f" (вес {weight})" if weight else ""
+            st.text(f"{num}. {name}{weight_str}: {raw_str}{comp_str}")
 
     # Кнопки
     st.divider()
