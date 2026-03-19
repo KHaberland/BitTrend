@@ -4,4 +4,11 @@ numpy>=1.24.0
 requests>=2.31.0
 plotly>=5.18.0
 python-dotenv>=1.0.0
+yfinance>=0.2.0    # DXY (Yahoo Finance)
 jupyter>=1.0.0
+
+# Selenium — fallback для парсинга LookIntoBitcoin (динамические страницы)
+selenium>=4.0.0
+
+# Опционально: ccxt для унификации работы с биржами
+# ccxt>=4.0.0

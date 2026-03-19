@@ -4,12 +4,15 @@
 
 import logging
 import requests
+import pandas as pd
 from typing import Optional, Dict, Tuple, List
 
 logger = logging.getLogger(__name__)
 
 BINANCE_FAPI = "https://fapi.binance.com/fapi/v1"
 BINANCE_DATA = "https://fapi.binance.com/futures/data"
+# Spot API для klines (plan 8.2) — надёжный источник дневных цен
+BINANCE_SPOT = "https://api.binance.com/api/v3"
 
 
 def get_btc_price() -> float:
@@ -125,11 +128,12 @@ def get_btc_derivatives() -> Optional[Dict]:
 def get_btc_klines(limit: int = 200) -> Optional[List[float]]:
     """
     Получить историю цен BTC для расчёта MA200.
+    Источник: Binance Spot API (plan 8.2).
     Returns: список цен закрытия (от старых к новым) или None.
     """
     try:
         r = requests.get(
-            f"{BINANCE_FAPI}/klines",
+            f"{BINANCE_SPOT}/klines",
             params={"symbol": "BTCUSDT", "interval": "1d", "limit": limit},
             timeout=10
         )
@@ -142,8 +146,13 @@ def get_btc_klines(limit: int = 200) -> Optional[List[float]]:
 
 
 def get_ma200() -> Optional[float]:
-    """Вычислить MA200 по данным Binance."""
+    """
+    Вычислить MA200 по данным Binance (plan 8.2).
+    df['ma200'] = df['close'].rolling(200).mean()
+    """
     prices = get_btc_klines(200)
     if not prices or len(prices) < 200:
         return None
-    return sum(prices[-200:]) / 200
+    df = pd.DataFrame({"close": prices})
+    df["ma200"] = df["close"].rolling(200).mean()
+    return float(df["ma200"].iloc[-1])

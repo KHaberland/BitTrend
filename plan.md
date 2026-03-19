@@ -61,10 +61,14 @@ BitTrend/
 │   │   ├── __init__.py
 │   │   ├── fetcher.py       # DataFetcher.fetch_all() — единая точка входа
 │   │   ├── binance.py       # Цена, Funding, OI (из derivatives + Binance API)
-│   │   ├── onchain.py       # MVRV Z-Score, NUPL, SOPR (расширенный onchain)
-│   │   ├── macro.py         # FRED (ставки, DXY, 10Y)
-│   │   ├── etf.py           # Farside / Coinglass ETF flows
-│   │   └── fear_greed.py    # Alternative.me (копия из CryptoConsult)
+│   │   ├── onchain.py       # MVRV Z-Score, NUPL, SOPR (Glassnode + LookIntoBitcoin)
+│   │   ├── lookintobitcoin.py # Парсинг MVRV/NUPL/SOPR, stabilize, circuit breaker
+│   │   ├── storage.py      # SQLite onchain_history, save_history, get_history
+│   │   ├── normalize.py    # normalize_mvrv/nupl/sopr → 0–1
+│   │   ├── types.py        # OnchainMetrics (TypedDict)
+│   │   ├── macro.py        # FRED (ставки, DXY, 10Y)
+│   │   ├── etf.py          # Farside / Coinglass ETF flows
+│   │   └── fear_greed.py   # Alternative.me (копия из CryptoConsult)
 │   ├── scoring/
 │   │   ├── __init__.py
 │   │   └── calculator.py    # BitTrendScorer
@@ -77,6 +81,8 @@ BitTrend/
 │   │   └── generator.py     # Alert Generator
 │   └── __init__.py
 ├── app.py                   # Streamlit entry point
+├── data/
+│   └── bittrend.db          # SQLite (onchain_history)
 ├── notebooks/
 │   └── test_formulas.ipynb  # Jupyter для отладки
 ├── requirements.txt
@@ -250,6 +256,7 @@ CACHE_TTL=300
 - [x] **Этап 4:** Alert Generator
 - [x] **Этап 5:** Streamlit UI
 - [x] **Этап 6:** Jupyter notebook для отладки
+- [x] **Этап 7:** LookIntoBitcoin 8.1 + production-grade улучшения (см. 8.9)
 - [ ] **Финал:** Интеграция, тестирование, README
 
 ---
@@ -398,6 +405,55 @@ CACHE_TTL = 300
 | ETF flows | ✔ | парсинг Farside |
 | Macro | ✔ | FRED + Yahoo Finance |
 | Fear & Greed | ✔ | API Alternative.me |
+
+---
+
+### 8.9 Реализованные улучшения LookIntoBitcoin (парсинг 8.1) ✅
+
+**Файлы:** `bit_trend/data/lookintobitcoin.py`, `storage.py`, `normalize.py`, `types.py`
+
+#### Парсинг и fallback
+- **parse_fast()** — requests + pattern extraction (regex, не `"datasets" in text`)
+- **parse_selenium()** — WebDriverWait, headless Chrome, Selenium pool (переиспользование driver)
+- **Цепочка:** Glassnode → parse_fast → parse_selenium → last_known_good
+
+#### Надёжность
+- **stabilize()** — защита от скачков (MVRV 2.1→9.8→2.2), max_delta по метрике
+- **is_same()** — deduplication, не писать в БД одно и то же
+- **Data validation** — sanity check (MVRV -5..20, NUPL -0.5..1.5, SOPR 0.5..2.0)
+- **Circuit breaker** — отключение на 6 ч после 5 неудач, recovery
+
+#### Качество данных
+- **Freshness** — `is_fresh()`, старые данные → confidence × 0.5
+- **source_score** — success_rate×0.5 + confidence×0.3 + freshness×0.2, ignore если < 0.4
+- **Data provenance** — parser_version, method, timestamp
+- **Confidence** — динамический (base × success_rate)
+
+#### Graceful degradation
+- **get_last_known_good()** — при failed возвращать последние известные значения
+- **logger.error** — CRITICAL при unavailable (защита от silent failure)
+
+#### Time-series storage
+- **SQLite** — таблица `onchain_history` (timestamp, mvrv, nupl, sopr, source, confidence)
+- **save_history()** — insert только при изменении (deduplication)
+- **get_last_history()**, **get_history(limit)** — для графиков, backtesting
+
+#### Drift detection
+- **detect_drift(values, window, threshold)** — медленное сползание данных (возможный баг парсинга)
+
+#### Feature flags
+- **USE_LOOKINTOBITCOIN**, **USE_SELENIUM** — быстрый disable для тестов
+
+#### Multi-source merge
+- **merge_sources(a, b)** — выбор по confidence
+- **merge_weighted(a, b, key)** — взвешенное среднее
+
+#### Normalization layer
+- **normalize_mvrv()**, **normalize_nupl()**, **normalize_sopr()** — все метрики в 0–1
+- **normalize_all(data)** — пакетная нормализация
+
+#### Data contract
+- **OnchainMetrics** (TypedDict) — контракт для API
 
 ---
 

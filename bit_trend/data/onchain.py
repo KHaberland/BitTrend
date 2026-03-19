@@ -1,7 +1,10 @@
 """
 Он-чейн аналитика Bitcoin: MVRV Z-Score, NUPL, SOPR, Exchange flow.
-Бесплатно: Blockchain.com API.
-Опционально: Glassnode API (MVRV Z-Score, NUPL, SOPR при наличии GLASSNODE_API_KEY).
+
+Источники (по приоритету):
+1. Glassnode API — при наличии GLASSNODE_API_KEY
+2. LookIntoBitcoin — парсинг (бесплатно, план 8.1)
+3. Blockchain.com — stats, active addresses
 """
 
 import logging
@@ -180,6 +183,27 @@ def get_btc_onchain() -> Optional[Dict]:
                 result["exchange_flow_signal"] = 1
             elif in_val > out_val * 1.1:
                 result["exchange_flow_signal"] = -1
+
+    # Fallback: LookIntoBitcoin — parse_fast → parse_selenium
+    if result["mvrv_z_score"] is None or result["nupl"] is None or result["sopr"] is None:
+        try:
+            from .lookintobitcoin import get_lookintobitcoin_metrics
+            lib_data = get_lookintobitcoin_metrics()
+            if lib_data.get("source") == "failed":
+                logger.error("CRITICAL: Onchain data unavailable — система работает вслепую")
+            elif lib_data.get("source_score", 0) >= 0.4:
+                confidence = lib_data.get("confidence", 0)
+                if confidence >= 0.5:
+                    if result["mvrv_z_score"] is None and lib_data.get("mvrv_z_score") is not None:
+                        result["mvrv_z_score"] = lib_data["mvrv_z_score"]
+                    if result["nupl"] is None and lib_data.get("nupl") is not None:
+                        result["nupl"] = lib_data["nupl"]
+                    if result["sopr"] is None and lib_data.get("sopr") is not None:
+                        val = lib_data["sopr"]
+                        result["sopr"] = val
+                        result["sopr_signal"] = 1 if val < 1.0 else (-1 if val > 1.05 else 0)
+        except Exception as e:
+            logger.debug(f"LookIntoBitcoin fallback: {e}")
 
     result["interpretation"] = _interpret_onchain(result)
     return result
