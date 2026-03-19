@@ -1,10 +1,12 @@
 """
 DataFetcher — единая точка входа для сбора всех рыночных данных.
 Кэширование с TTL 5–15 минут, fallback при недоступности API.
+Параллельная загрузка источников для ускорения.
 """
 
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
@@ -16,39 +18,95 @@ from .etf import get_etf_flows
 
 logger = logging.getLogger(__name__)
 
+# Общий кэш на уровне модуля — сохраняется между rerun Streamlit
+_shared_cache: Optional[Dict[str, Any]] = None
+_shared_cache_time: Optional[datetime] = None
+
 
 class DataFetcher:
     """Сбор и кэширование всех данных для BitTrend."""
 
     def __init__(self, ttl_seconds: int = 300):
         self.ttl = timedelta(seconds=ttl_seconds)
-        self._cache: Optional[Dict[str, Any]] = None
-        self._cache_time: Optional[datetime] = None
 
     def _is_cache_valid(self) -> bool:
-        if self._cache is None or self._cache_time is None:
+        global _shared_cache, _shared_cache_time
+        if _shared_cache is None or _shared_cache_time is None:
             return False
-        return datetime.now() - self._cache_time < self.ttl
+        return datetime.now() - _shared_cache_time < self.ttl
 
     def fetch_all(self, use_cache: bool = True) -> Dict[str, Any]:
         """
-        Собрать все данные из всех источников.
+        Собрать все данные из всех источников (параллельно).
         При use_cache=True возвращает кэш, если TTL не истёк.
 
         Returns:
             Словарь с полным набором данных для Score Calculator.
         """
+        global _shared_cache, _shared_cache_time
         if use_cache and self._is_cache_valid():
-            return self._cache
+            return _shared_cache
 
-        btc_price = get_btc_price()
-        ma200 = get_ma200()
+        # Параллельная загрузка — ускорение в 3–5 раз
+        btc_price = 0.0
+        ma200 = None
+        derivatives: Dict = {}
+        fear_greed: Dict = {}
+        macro: Dict = {}
+        onchain: Dict = {}
+        etf: Dict = {}
 
-        derivatives = get_btc_derivatives() or {}
-        fear_greed = get_fear_greed_index() or {}
-        macro = get_macro_data() or {}
-        onchain = get_btc_onchain() or {}
-        etf = get_etf_flows() or {}
+        def _fetch_price():
+            return get_btc_price()
+
+        def _fetch_ma200():
+            return get_ma200()
+
+        def _fetch_derivatives():
+            return get_btc_derivatives() or {}
+
+        def _fetch_fear_greed():
+            return get_fear_greed_index() or {}
+
+        def _fetch_macro():
+            return get_macro_data() or {}
+
+        def _fetch_onchain():
+            return get_btc_onchain() or {}
+
+        def _fetch_etf():
+            return get_etf_flows() or {}
+
+        with ThreadPoolExecutor(max_workers=6) as executor:
+            futures = {
+                executor.submit(_fetch_price): "price",
+                executor.submit(_fetch_ma200): "ma200",
+                executor.submit(_fetch_derivatives): "derivatives",
+                executor.submit(_fetch_fear_greed): "fear_greed",
+                executor.submit(_fetch_macro): "macro",
+                executor.submit(_fetch_onchain): "onchain",
+                executor.submit(_fetch_etf): "etf",
+            }
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    val = future.result()
+                    if key == "price":
+                        btc_price = val or 0.0
+                    elif key == "ma200":
+                        ma200 = val
+                    elif key == "derivatives":
+                        derivatives = val
+                    elif key == "fear_greed":
+                        fear_greed = val
+                    elif key == "macro":
+                        macro = val
+                    elif key == "onchain":
+                        onchain = val
+                    elif key == "etf":
+                        etf = val
+                except Exception as e:
+                    logger.warning(f"Ошибка загрузки {key}: {e}")
 
         result: Dict[str, Any] = {
             "btc_price": btc_price,
@@ -74,11 +132,12 @@ class DataFetcher:
             "etf_interpretation": etf.get("interpretation"),
         }
 
-        self._cache = result
-        self._cache_time = datetime.now()
+        _shared_cache = result
+        _shared_cache_time = datetime.now()
         return result
 
     def clear_cache(self) -> None:
         """Очистить кэш."""
-        self._cache = None
-        self._cache_time = None
+        global _shared_cache, _shared_cache_time
+        _shared_cache = None
+        _shared_cache_time = None

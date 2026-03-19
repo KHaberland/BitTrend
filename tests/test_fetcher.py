@@ -4,7 +4,10 @@ Unit-тесты для DataFetcher.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from datetime import datetime
+from unittest.mock import patch
+
+from bit_trend.data import fetcher as fetcher_module
 from bit_trend.data.fetcher import DataFetcher
 
 
@@ -71,11 +74,9 @@ def test_fetch_all_structure(
 
 def test_cache_works():
     """Кэш возвращает те же данные при use_cache=True."""
-    from datetime import datetime
-
     fetcher = DataFetcher(ttl_seconds=3600)
-    fetcher._cache = _mock_fetch_all_sources()
-    fetcher._cache_time = datetime.now()
+    fetcher_module._shared_cache = _mock_fetch_all_sources()
+    fetcher_module._shared_cache_time = datetime.now()
 
     data = fetcher.fetch_all(use_cache=True)
     assert data["btc_price"] == 70800.0
@@ -83,12 +84,10 @@ def test_cache_works():
 
 def test_clear_cache():
     """clear_cache() очищает кэш."""
-    from datetime import datetime
-
     fetcher = DataFetcher(ttl_seconds=300)
-    fetcher._cache = {"btc_price": 1}
-    fetcher._cache_time = datetime.now()
+    fetcher_module._shared_cache = {"btc_price": 1}
+    fetcher_module._shared_cache_time = datetime.now()
 
     fetcher.clear_cache()
-    assert fetcher._cache is None
-    assert fetcher._cache_time is None
+    assert fetcher_module._shared_cache is None
+    assert fetcher_module._shared_cache_time is None

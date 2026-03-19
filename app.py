@@ -121,19 +121,22 @@ def main():
         )
         st.divider()
         if st.button("Recalculate Score", type="primary", use_container_width=True):
+            DataFetcher(ttl_seconds=CACHE_TTL).clear_cache()
             st.session_state.score = None
             st.rerun()
         st.caption("Обновить данные и пересчитать score.")
 
-    # Загрузка данных
+    # Загрузка данных (с индикатором)
     fetcher = DataFetcher(ttl_seconds=CACHE_TTL)
-    data = fetcher.fetch_all(use_cache=True)
+    with st.spinner("Загрузка данных с бирж и API…"):
+        data = fetcher.fetch_all(use_cache=True)
     btc_price = data.get("btc_price") or 0.0
     btc_value_usdt = btc_amount * btc_price
 
     # Первый расчёт или при изменении портфеля
     if st.session_state.score is None:
-        _compute_and_store(usdt, btc_amount, btc_price)
+        with st.spinner("Расчёт score и рекомендаций…"):
+            _compute_and_store(usdt, btc_amount, btc_price)
 
     # Главная страница (5.1)
     st.title("BitTrend")
