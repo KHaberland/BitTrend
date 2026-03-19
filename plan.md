@@ -257,7 +257,7 @@ CACHE_TTL=300
 - [x] **Этап 5:** Streamlit UI
 - [x] **Этап 6:** Jupyter notebook для отладки
 - [x] **Этап 7:** LookIntoBitcoin 8.1 + production-grade улучшения (см. 8.9)
-- [ ] **Финал:** Интеграция, тестирование, README
+- [x] **Финал:** Интеграция, тестирование, README
 
 ---
 

@@ -120,7 +120,10 @@ def main():
             format="%.4f",
         )
         st.divider()
-        st.caption("Нажмите Recalculate Score для обновления.")
+        if st.button("Recalculate Score", type="primary", use_container_width=True):
+            st.session_state.score = None
+            st.rerun()
+        st.caption("Обновить данные и пересчитать score.")
 
     # Загрузка данных
     fetcher = DataFetcher(ttl_seconds=CACHE_TTL)

@@ -21,3 +21,4 @@ Gemfile.lock
 data/*.db
 __pycache__/
 .env
+.pytest_cache/
