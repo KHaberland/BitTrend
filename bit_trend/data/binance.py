@@ -1,11 +1,14 @@
 """
 Интеграция с Binance API — цена BTC, MA200, Funding Rate, Open Interest.
+Plan 8.3: агрегация Binance + Bybit (среднее по двум биржам для надёжности).
 """
 
 import logging
 import requests
 import pandas as pd
 from typing import Optional, Dict, Tuple, List
+
+from .bybit import get_bybit_derivatives
 
 logger = logging.getLogger(__name__)
 
@@ -67,19 +70,9 @@ def _get_open_interest_history() -> Optional[Tuple[float, float]]:
         return None
 
 
-def get_btc_derivatives() -> Optional[Dict]:
+def _get_binance_derivatives_raw(btc_price: float) -> Optional[Dict]:
     """
-    Получить данные по деривативам BTC: Funding Rate, Open Interest.
-
-    Returns:
-        {
-            "funding_rate": float,
-            "funding_rate_8h_avg": float,
-            "open_interest_usd": float,
-            "open_interest_7d_ago_usd": float,
-            "open_interest_7d_change_pct": float,
-            ...
-        } или None при ошибке
+    Получить данные по деривативам только с Binance (внутренняя функция).
     """
     try:
         fr_resp = requests.get(
@@ -93,7 +86,6 @@ def get_btc_derivatives() -> Optional[Dict]:
         funding_rate = rates[0] if rates else 0.0
         funding_rate_8h_avg = sum(rates) / len(rates) if rates else 0.0
 
-        btc_price = get_btc_price()
         oi_hist = _get_open_interest_history()
         if oi_hist:
             oi_now_usd, oi_7d_ago_usd = oi_hist
@@ -121,8 +113,64 @@ def get_btc_derivatives() -> Optional[Dict]:
             "open_interest_7d_change_pct": oi_change,
         }
     except Exception as e:
-        logger.warning(f"Ошибка получения деривативов BTC: {e}")
+        logger.warning(f"Ошибка Binance деривативов: {e}")
         return None
+
+
+def _merge_derivatives(binance_data: Optional[Dict], bybit_data: Optional[Dict]) -> Optional[Dict]:
+    """
+    Объединить данные Binance + Bybit (plan 8.3).
+    Среднее по двум биржам при наличии обоих, иначе fallback на одну.
+    """
+    if binance_data is None and bybit_data is None:
+        return None
+    if binance_data is None:
+        return bybit_data
+    if bybit_data is None:
+        return binance_data
+
+    def avg(a: float, b: float) -> float:
+        return (a + b) / 2
+
+    return {
+        "funding_rate": avg(binance_data["funding_rate"], bybit_data["funding_rate"]),
+        "funding_rate_8h_avg": avg(
+            binance_data["funding_rate_8h_avg"],
+            bybit_data["funding_rate_8h_avg"],
+        ),
+        "open_interest_usd": avg(
+            binance_data["open_interest_usd"],
+            bybit_data["open_interest_usd"],
+        ),
+        "open_interest_7d_ago_usd": avg(
+            binance_data["open_interest_7d_ago_usd"],
+            bybit_data["open_interest_7d_ago_usd"],
+        ),
+        "open_interest_7d_change_pct": avg(
+            binance_data["open_interest_7d_change_pct"],
+            bybit_data["open_interest_7d_change_pct"],
+        ),
+    }
+
+
+def get_btc_derivatives() -> Optional[Dict]:
+    """
+    Получить данные по деривативам BTC: Funding Rate, Open Interest.
+    Plan 8.3: агрегация Binance + Bybit (среднее для надёжности).
+
+    Returns:
+        {
+            "funding_rate": float,
+            "funding_rate_8h_avg": float,
+            "open_interest_usd": float,
+            "open_interest_7d_ago_usd": float,
+            "open_interest_7d_change_pct": float,
+        } или None при ошибке
+    """
+    btc_price = get_btc_price()
+    binance_data = _get_binance_derivatives_raw(btc_price)
+    bybit_data = get_bybit_derivatives(btc_price)
+    return _merge_derivatives(binance_data, bybit_data)
 
 
 def get_btc_klines(limit: int = 200) -> Optional[List[float]]:
