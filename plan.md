@@ -221,9 +221,10 @@ numpy>=1.24.0
 requests>=2.31.0
 plotly>=5.18.0
 python-dotenv>=1.0.0
+yfinance>=0.2.0    # DXY (Yahoo Finance)
 ```
 
-Опционально: `ccxt` для унификации работы с биржами.
+Опционально: `ccxt` для унификации работы с биржами, `selenium` для парсинга LookIntoBitcoin при защите.
 
 ---
 
@@ -253,7 +254,154 @@ CACHE_TTL=300
 
 ---
 
-## 8. Ссылки на исходники CryptoConsult
+## 8. Источники данных и их получение
+
+### 8.1 MVRV Z-Score / NUPL / SOPR
+
+**Вариант 1 (реально рабочий)** → парсинг LookIntoBitcoin
+
+| Метрика | Страница |
+|---------|----------|
+| MVRV Z-Score | `/charts/mvrv-zscore/` |
+| NUPL | `/charts/nupl/` |
+| SOPR | `/charts/sopr/` |
+
+**Как парсить:**
+
+**Вариант A (лучше)** — вытащить данные из JS. На странице данные обычно лежат в `<script> ... datasets: [...] </script>`:
+
+```python
+import requests
+import re
+import json
+
+html = requests.get(url).text
+data = re.search(r'datasets:\s*(\[[\s\S]*?\])', html)
+json_data = json.loads(data.group(1))
+```
+
+**Вариант B** — Selenium (если защита):
+```python
+from selenium import webdriver
+```
+Минусы: медленно, но надёжно.
+
+**Совет:** обновлять 1 раз в день.
+
+---
+
+### 8.2 MA200 (сам считаешь)
+
+**Источник:** Binance  
+`https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=200`
+
+**Расчёт:**
+```python
+import pandas as pd
+df['ma200'] = df['close'].rolling(200).mean()
+```
+Самый надёжный кусок всей системы.
+
+---
+
+### 8.3 Funding Rate + Open Interest
+
+| Биржа | Funding | Open Interest |
+|-------|---------|---------------|
+| Binance | `https://fapi.binance.com/fapi/v1/fundingRate` | `https://fapi.binance.com/futures/data/openInterestHist` |
+| Bybit | API Bybit | API Bybit |
+
+Делать среднее по Binance + Bybit → почти как агрегатор (надёжность).
+
+---
+
+### 8.4 ETF flows
+
+**Лучший источник** → Farside Investors  
+`https://farside.co.uk/btc/`
+
+**Парсинг (устойчивый):**
+```python
+soup.find("table")
+```
+Лайфхак: парсить только таблицу, не весь сайт. Проверять изменения структуры.
+
+**Fallback:** Twitter (X) scraping или RSS (если появится).
+
+---
+
+### 8.5 Macro (ставки, DXY, 10Y, S&P500)
+
+**Лучший вариант** → FRED API (бесплатно)
+
+| Метрика | Код FRED |
+|---------|----------|
+| Ставка ФРС | `FEDFUNDS` |
+| 10Y | `DGS10` |
+| CPI | `CPIAUCSL` |
+
+**DXY** (нет в FRED напрямую) → Yahoo Finance:
+```python
+import yfinance as yf
+dxy = yf.download("DX-Y.NYB")
+```
+
+---
+
+### 8.6 Fear & Greed Index
+
+**API:** Alternative.me  
+`https://api.alternative.me/fng/`
+
+---
+
+### 8.7 Архитектура загрузки данных
+
+```
+data/
+├── loaders/
+│   ├── binance.py
+│   ├── fred.py
+│   ├── fear_greed.py
+│   ├── farside_scraper.py
+│   └── lookintobitcoin_scraper.py
+├── cache/
+│   └── sqlite.db
+├── services/
+│   └── metrics_calculator.py
+└── scheduler.py
+```
+
+**Scheduler:**
+- **Раз в день:** MVRV / NUPL / SOPR / ETF
+- **Каждые 5–15 минут:** Funding / OI / price
+- **Раз в час:** Macro
+
+**Кэш (обязательно):**
+```
+CACHE_TTL = 300
+```
+Без этого: словишь блокировки, API будет тормозить.
+
+---
+
+### 8.8 Сводка: всё можно собрать бесплатно
+
+| Метрика | Реально? | Источник |
+|---------|----------|----------|
+| MVRV | ✔ | парсинг LookIntoBitcoin |
+| NUPL | ✔ | парсинг LookIntoBitcoin |
+| SOPR | ✔ | парсинг LookIntoBitcoin |
+| MA200 | ✔ | считаешь из Binance |
+| Funding | ✔ | API Binance/Bybit |
+| OI | ✔ | API Binance/Bybit |
+| ETF flows | ✔ | парсинг Farside |
+| Macro | ✔ | FRED + Yahoo Finance |
+| Fear & Greed | ✔ | API Alternative.me |
+
+---
+
+## 9. Ссылки на исходники CryptoConsult
 
 | Компонент | Путь |
 |-----------|------|
