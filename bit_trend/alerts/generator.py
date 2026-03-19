@@ -44,17 +44,17 @@ def _format_action(
     if total < 0.01:
         return "держите текущую позицию"
 
+    total_str = f"{total:,.0f}".replace(",", " ")
     if deviation_usdt > 0:
-        direction = "USDT → BTC"
-        verb = "перевести"
+        if parts and len(parts) > 1:
+            parts_str = ", ".join(f"{p:.0f}" for p in parts)
+            return f"перевести {total_str} USDT → BTC ({len(parts)} части: {parts_str} USDT)"
+        return f"перевести {total_str} USDT → BTC"
     else:
-        direction = "BTC → USDT"
-        verb = "продать BTC на"
-
-    if parts and len(parts) > 1:
-        parts_str = ", ".join(f"{p:.0f}" for p in parts)
-        return f"{verb} {total:,.0f} {direction} ({len(parts)} части: {parts_str} USDT)"
-    return f"{verb} {total:,.0f} {direction}"
+        if parts and len(parts) > 1:
+            parts_str = ", ".join(f"{p:.0f}" for p in parts)
+            return f"продать BTC на {total_str} USDT ({len(parts)} части: {parts_str} USDT)"
+        return f"продать BTC на {total_str} USDT"
 
 
 class AlertGenerator:

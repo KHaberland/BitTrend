@@ -48,7 +48,7 @@ class TestAlertGenerator:
         result = _format_action(2500, 70000, None)
         assert "USDT" in result
         assert "BTC" in result
-        assert "2500" in result or "2,500" in result
+        assert "2500" in result or "2,500" in result or "2 500" in result
 
     def test_format_action_sell(self):
         """Действие на продажу BTC."""
