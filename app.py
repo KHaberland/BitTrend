@@ -207,6 +207,41 @@ def main():
             weight_str = f" (вес {weight})" if weight else ""
             st.text(f"{num}. {name}{weight_str}: {raw_str}{comp_str}")
 
+    o_src = metrics_data.get("onchain_source")
+    o_conf = metrics_data.get("onchain_confidence")
+    o_ss = metrics_data.get("onchain_source_score")
+    o_meth = metrics_data.get("onchain_method")
+    with st.expander("🔎 Качество ончейн-данных (источник и уверенность)"):
+        if not o_src or o_src == "none":
+            st.warning(
+                "Ончейн MVRV/NUPL/SOPR без явного источника или недоступны — "
+                "вклад этих метрик в score может опираться на «тишину» (нулевые компоненты)."
+            )
+        else:
+            st.markdown(
+                f"**Источник:** `{o_src}`  \n"
+                f"**confidence:** `{o_conf}`  \n"
+                f"**source_score:** `{o_ss}`  \n"
+                f"**method:** `{o_meth or '—'}`"
+            )
+            if o_ss is not None and float(o_ss) < 0.5:
+                st.caption("Низкий source_score — трактуйте MVRV/NUPL/SOPR осторожно (прокси или ухудшенный парсинг).")
+
+    cpi_y = metrics_data.get("cpi_yoy_pct")
+    sp_raw = metrics_data.get("sp500")
+    sp_ch = metrics_data.get("sp500_30d_change_pct")
+    if cpi_y is not None or sp_raw is not None:
+        with st.expander("🌐 Макро: CPI и S&P 500 (доп. к сигналу)"):
+            st.caption("CPI — FRED CPIAUCSL (г/г); S&P — yfinance ^GSPC (~30 торг. дней).")
+            if cpi_y is not None:
+                st.metric("CPI г/г", f"{cpi_y:.2f}%")
+            else:
+                st.caption("CPI: нет FRED_API_KEY или данных.")
+            if sp_raw is not None:
+                st.metric("S&P 500", f"{sp_raw:,.2f}", delta=f"{sp_ch:.2f}%" if sp_ch is not None else None)
+            else:
+                st.caption("S&P: не удалось загрузить (yfinance).")
+
     # Кнопки
     st.divider()
     btn_col1, btn_col2, btn_col3, btn_col4, _ = st.columns([1, 1, 1, 1, 1])

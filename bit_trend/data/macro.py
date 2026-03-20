@@ -16,6 +16,7 @@ FRED_BASE = "https://api.stlouisfed.org/fred"
 SERIES_FEDFUNDS = "FEDFUNDS"
 SERIES_DGS10 = "DGS10"
 SERIES_DTWEXBGS = "DTWEXBGS"
+SERIES_CPI = "CPIAUCSL"
 
 
 def _get_fred_observations(
@@ -71,6 +72,41 @@ def _get_latest_fred(series_id: str) -> Optional[float]:
     return _parse_fred_value(obs[0])
 
 
+def _get_cpi_level_and_yoy() -> Tuple[Optional[float], Optional[float]]:
+    """Индекс CPI (уровень) и изменение г/г, %. FRED CPIAUCSL (§8.5)."""
+    obs = _get_fred_observations(SERIES_CPI, limit=14)
+    if not obs or len(obs) < 13:
+        return None, None
+    latest = _parse_fred_value(obs[0])
+    yago = _parse_fred_value(obs[12])
+    if latest is None:
+        return None, None
+    if yago is None or yago == 0:
+        return latest, None
+    yoy = (latest / yago - 1.0) * 100.0
+    return latest, yoy
+
+
+def _get_sp500_level_and_30d_change() -> Tuple[Optional[float], Optional[float]]:
+    """S&P 500: уровень и изменение ~30 торговых дней (yfinance ^GSPC), plan §8.5."""
+    try:
+        import yfinance as yf
+        t = yf.Ticker("^GSPC")
+        hist = t.history(period="3mo")
+        if hist is None or hist.empty or len(hist) < 22:
+            return None, None
+        close = hist["Close"].astype(float)
+        latest = float(close.iloc[-1])
+        ref = float(close.iloc[-22])
+        if ref == 0:
+            return latest, None
+        pct = (latest / ref - 1.0) * 100.0
+        return latest, pct
+    except Exception as e:
+        logger.warning("S&P 500 (yfinance): %s", e)
+        return None, None
+
+
 def _interpret_macro(data: Dict) -> Tuple[int, str]:
     """
     macro_signal: -1 = сжатие, 0 = нейтрально, +1 = расширение
@@ -78,6 +114,8 @@ def _interpret_macro(data: Dict) -> Tuple[int, str]:
     fed = data.get("fed_funds_rate")
     dxy_change = data.get("dxy_30d_change_pct")
     treasury_10y = data.get("treasury_10y")
+    cpi_yoy = data.get("cpi_yoy_pct")
+    sp_chg = data.get("sp500_30d_change_pct")
 
     score = 0
     parts = []
@@ -106,6 +144,22 @@ def _interpret_macro(data: Dict) -> Tuple[int, str]:
             score += 1
             parts.append("низкие доходности 10Y")
 
+    if cpi_yoy is not None:
+        if cpi_yoy > 5.0:
+            score -= 1
+            parts.append("высокий CPI г/г")
+        elif cpi_yoy < 2.5:
+            score += 1
+            parts.append("умеренный CPI г/г")
+
+    if sp_chg is not None:
+        if sp_chg >= 4.0:
+            score += 1
+            parts.append("S&P ~30д в плюсе")
+        elif sp_chg <= -7.0:
+            score -= 1
+            parts.append("S&P ~30д под давлением")
+
     signal = max(-1, min(1, score))
     if signal > 0:
         interp = "ликвидность расширяется"
@@ -122,41 +176,49 @@ def _interpret_macro(data: Dict) -> Tuple[int, str]:
 
 def get_macro_data() -> Optional[Dict]:
     """
-    Получить макроэкономические данные (ставки, DXY, 10Y).
+    Получить макроэкономические данные (ставки, DXY, 10Y, CPI по FRED; S&P 500 — yfinance).
+
+    DXY в коде — FRED DTWEXBGS (как upgrade_plan); в plan.md также упоминается Yahoo — формулировки см. README.
 
     Returns:
-        {
-            "fed_funds_rate": float | None,
-            "treasury_10y": float | None,
-            "dxy": float | None,
-            "dxy_30d_change_pct": float | None,
-            "macro_signal": int,
-            "interpretation": str
-        }
+        Словарь с полями FRED, cpi_*, sp500_*, macro_signal, interpretation.
     """
     result: Dict[str, Any] = {
         "fed_funds_rate": None,
         "treasury_10y": None,
         "dxy": None,
         "dxy_30d_change_pct": None,
+        "cpi_index": None,
+        "cpi_yoy_pct": None,
+        "sp500": None,
+        "sp500_30d_change_pct": None,
         "macro_signal": 0,
-        "interpretation": "нет данных (нужен FRED_API_KEY)",
+        "interpretation": "",
     }
 
     api_key = os.environ.get("FRED_API_KEY")
+    if api_key:
+        result["fed_funds_rate"] = _get_latest_fred(SERIES_FEDFUNDS)
+        result["treasury_10y"] = _get_latest_fred(SERIES_DGS10)
+
+        dxy_obs = _get_fred_observations(SERIES_DTWEXBGS, limit=35)
+        if dxy_obs:
+            latest = _parse_fred_value(dxy_obs[0])
+            oldest = _parse_fred_value(dxy_obs[-1]) if len(dxy_obs) > 1 else latest
+            result["dxy"] = latest
+            if latest and oldest and oldest > 0:
+                result["dxy_30d_change_pct"] = (latest - oldest) / oldest * 100
+
+        cpi_lvl, cpi_yoy = _get_cpi_level_and_yoy()
+        result["cpi_index"] = cpi_lvl
+        result["cpi_yoy_pct"] = cpi_yoy
+
+    sp_lvl, sp_chg = _get_sp500_level_and_30d_change()
+    result["sp500"] = sp_lvl
+    result["sp500_30d_change_pct"] = sp_chg
+
     if not api_key:
-        return result
-
-    result["fed_funds_rate"] = _get_latest_fred(SERIES_FEDFUNDS)
-    result["treasury_10y"] = _get_latest_fred(SERIES_DGS10)
-
-    dxy_obs = _get_fred_observations(SERIES_DTWEXBGS, limit=35)
-    if dxy_obs:
-        latest = _parse_fred_value(dxy_obs[0])
-        oldest = _parse_fred_value(dxy_obs[-1]) if len(dxy_obs) > 1 else latest
-        result["dxy"] = latest
-        if latest and oldest and oldest > 0:
-            result["dxy_30d_change_pct"] = (latest - oldest) / oldest * 100
+        result["interpretation"] = "нет FRED (ставки/DXY/10Y/CPI); S&P доступен без ключа"
 
     result["macro_signal"], result["interpretation"] = _interpret_macro(result)
     return result

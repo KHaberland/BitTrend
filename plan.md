@@ -214,7 +214,8 @@ Confidence: MEDIUM
 | Шаг | Задача | Файл |
 |-----|--------|------|
 | 6.1 | Тестирование формул MVRV, NUPL, SOPR | `notebooks/test_formulas.ipynb` |
-| 6.2 | Валидация весов и порогов | — |
+| 6.2 | Валидация весов Z-score / composite, порогов сигналов | см. 8.10 🔟 |
+| 6.3 | Backtest onchain-proxy (покупка при composite &lt; −1, продажа при &gt; +1), Sharpe / max DD | `notebooks/backtest_onchain_proxy.ipynb` (опционально) |
 
 ---
 
@@ -348,7 +349,8 @@ soup.find("table")
 | 10Y | `DGS10` |
 | CPI | `CPIAUCSL` |
 
-**DXY** (нет в FRED напрямую) → Yahoo Finance:
+**DXY** — в тексте плана: Yahoo Finance (`DX-Y.NYB`). **В коде BitTrend** для согласованности с `upgrade_plan.md` используется широкий индекс доллара FRED `DTWEXBGS`; CPI (`CPIAUCSL`, г/г) и **S&P 500** добавлены в `macro.py` (индекс — yfinance `^GSPC`).
+
 ```python
 import yfinance as yf
 dxy = yf.download("DX-Y.NYB")
@@ -400,6 +402,8 @@ CACHE_TTL = 300
 | MVRV | ✔ | парсинг LookIntoBitcoin или pycoingecko + упрощённая модель (8.10) |
 | NUPL | ✔ | парсинг LookIntoBitcoin или pycoingecko + упрощённая модель (8.10) |
 | SOPR | ✔ | парсинг LookIntoBitcoin или pycoingecko + упрощённая модель (8.10) |
+| Volatility | ✔ | pycoingecko (price) → rolling std returns (8.10) |
+| Drawdown | ✔ | pycoingecko (price) → rolling max, drawdown (8.10) |
 | MA200 | ✔ | считаешь из Binance |
 | Funding | ✔ | API Binance/Bybit |
 | OI | ✔ | API Binance/Bybit |
@@ -458,9 +462,9 @@ CACHE_TTL = 300
 
 ---
 
-### 8.10 Практический способ получить MVRV, NUPL и SOPR без Glassnode API ✅
+### 8.10 Практический способ получить MVRV, NUPL, SOPR и др. без Glassnode API ✅
 
-**Контекст:** Все способы получения MVRV, NUPL и SOPR через Glassnode API не подходят. Используем только исторические цены BTC и упрощённые данные по движению монет.
+**Контекст:** Все способы получения MVRV, NUPL и SOPR через Glassnode API не подходят. Используем CoinGecko: цены, Market Cap, Volume — и упрощённые модели.
 
 **Стек:** Python + pandas + pycoingecko + numpy. Упрощённая модель на дневных агрегатах — не идеально, но даёт приблизительные значения, достаточные для анализа.
 
@@ -470,7 +474,7 @@ CACHE_TTL = 300
 pip install pandas pycoingecko numpy
 ```
 
-#### 2️⃣ Получение исторических цен BTC
+#### 2️⃣ Получение данных из CoinGecko (Price, Market Cap, Volume)
 
 ```python
 from pycoingecko import CoinGeckoAPI
@@ -479,57 +483,192 @@ import numpy as np
 
 cg = CoinGeckoAPI()
 
-# Получаем исторические цены BTC за последние 3 года (дневные)
-data = cg.get_coin_market_chart_by_id(id='bitcoin', vs_currency='usd', days=1095)  # 3 года ~ 1095 дней
+# Получаем исторические данные за последние 3 года (дневные)
+data = cg.get_coin_market_chart_by_id(id='bitcoin', vs_currency='usd', days=1095)
 
-prices = data['prices']  # [timestamp, price]
-df = pd.DataFrame(prices, columns=['timestamp', 'price'])
+# CoinGecko возвращает: prices, market_caps, total_volumes
+df = pd.DataFrame(data['prices'], columns=['timestamp', 'price'])
 df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 df.set_index('timestamp', inplace=True)
 
-print(df.head())
+# Добавляем Market Cap и Volume — напрямую из API
+df['market_cap'] = pd.DataFrame(data['market_caps'], columns=['timestamp', 'market_cap']).set_index('timestamp')['market_cap']
+df['volume'] = pd.DataFrame(data['total_volumes'], columns=['timestamp', 'volume']).set_index('timestamp')['volume']
+
+print(df[['price', 'market_cap', 'volume']].head())
 ```
 
-#### 3️⃣ Упрощённый MVRV
+#### 3️⃣ Улучшенный MVRV proxy
 
-Для приближённого расчёта Realized Value считаем, что каждая монета перемещается один раз в год. (На практике Glassnode считает каждое перемещение, но это сильно ускоряет расчёт.)
+Не 365 дней, а **комбинация окон** — ближе к реальному cost basis:
+- **180d** — краткосрочное
+- **365d** — среднесрочное
+- **730d** — 2 года (долгосрочное)
+
+Realized Value = средняя цена за окно × supply. Для supply используем `market_cap / price`.
 
 ```python
-# Допустим, circulating supply растёт линейно
-start_supply = 18000000  # 18 млн монет три года назад
-end_supply = 19600000    # 19.6 млн монет сейчас
-df['circulating_supply'] = np.linspace(start_supply, end_supply, len(df))
+# Supply (приблизительно)
+df['supply'] = df['market_cap'] / df['price']
 
-# Market Value
-df['market_value'] = df['price'] * df['circulating_supply']
+# Realized Value для разных окон
+df['rv_180'] = df['price'].rolling(180, min_periods=1).mean() * df['supply']
+df['rv_365'] = df['price'].rolling(365, min_periods=1).mean() * df['supply']
+df['rv_730'] = df['price'].rolling(730, min_periods=1).mean() * df['supply']
 
-# Realized Value (упрощённо: усреднённая цена за год на каждый день × supply)
-df['realized_value'] = df['price'].rolling(window=365, min_periods=1).mean() * df['circulating_supply']
+# MVRV proxy — основной (730d или взвешенная комбинация)
+df['mvrv_730'] = df['market_cap'] / df['rv_730']
+df['mvrv_365'] = df['market_cap'] / df['rv_365']
+df['mvrv_180'] = df['market_cap'] / df['rv_180']
 
-# MVRV
-df['mvrv'] = df['market_value'] / df['realized_value']
-
-print(df[['price', 'market_value', 'realized_value', 'mvrv']].tail())
+# Рекомендуемый: 730d или 0.5*730 + 0.3*365 + 0.2*180
+df['mvrv_proxy'] = df['market_cap'] / (0.5*df['rv_730'] + 0.3*df['rv_365'] + 0.2*df['rv_180'])
 ```
 
-#### 4️⃣ NUPL
+#### 4️⃣ NUPL proxy
 
 ```python
-df['nupl'] = (df['market_value'] - df['realized_value']) / df['market_value']
+df['realized_value'] = df['rv_730']  # или комбинация, как выше
+df['nupl_proxy'] = (df['market_cap'] - df['realized_value']) / df['market_cap']
 ```
 
-#### 5️⃣ SOPR (упрощённо)
+#### 5️⃣ SOPR proxy через поведение
 
-Берём дневное среднее отношение цены сегодня к среднему за предыдущий год — приблизительно имитирует SOPR.
+Добавляем **volume spikes** и **price acceleration** — формула типа `(price / MA) * volume_change`:
 
 ```python
-df['sopr'] = df['price'] / df['price'].rolling(window=365, min_periods=1).mean()
+# Price acceleration: цена относительно MA
+ma = df['price'].rolling(30, min_periods=1).mean()
+df['price_vs_ma'] = df['price'] / ma
+
+# Volume change (spike detection)
+df['volume_ma'] = df['volume'].rolling(14, min_periods=1).mean()
+df['volume_change'] = df['volume'] / df['volume_ma']
+
+# SOPR proxy: (price / MA) * volume_change
+df['sopr_proxy'] = (df['price'] / df['price'].rolling(365, min_periods=1).mean()) * df['volume_change']
+
+# Альтернатива: только price/MA для стабильности
+df['sopr_simple'] = df['price'] / df['price'].rolling(365, min_periods=1).mean()
 ```
 
-#### 6️⃣ Итог
+#### 6️⃣ Volatility и Drawdown (обязательные метрики)
 
 ```python
-print(df.tail())
+# Volatility — стандартное отклонение доходности за 30 дней
+df['returns'] = df['price'].pct_change()
+df['volatility_30d'] = df['returns'].rolling(30).std()
+
+# Drawdown — просадка от локального максимума
+df['rolling_max'] = df['price'].rolling(730, min_periods=1).max()
+df['drawdown'] = (df['price'] - df['rolling_max']) / df['rolling_max']
+```
+
+#### 7️⃣ Итог (сырые метрики)
+
+```python
+print(df[['price', 'market_cap', 'volume', 'mvrv_proxy', 'nupl_proxy', 'sopr_proxy', 'volatility_30d', 'drawdown']].tail())
+```
+
+#### 8️⃣ Z-score для всех метрик (апгрейд 1)
+
+Формула: `(значение − rolling_mean) / rolling_std` по **скользящему окну** (например 365 дней) — метрики в разных шкалах становятся **сопоставимыми**, проще строить стратегию и пороги.
+
+```python
+def rolling_z(series, window=365, min_periods=30):
+    m = series.rolling(window, min_periods=min_periods).mean()
+    s = series.rolling(window, min_periods=min_periods).std()
+    return (series - m) / s.replace(0, np.nan)
+
+Z_WIN = 365  # подобрать под горизонт (180 / 365 / 730)
+
+df['mvrv_z'] = rolling_z(df['mvrv_proxy'], Z_WIN)
+df['nupl_z'] = rolling_z(df['nupl_proxy'], Z_WIN)
+df['sopr_z'] = rolling_z(df['sopr_proxy'], Z_WIN)
+df['drawdown_z'] = rolling_z(df['drawdown'], Z_WIN)
+df['volatility_z'] = rolling_z(df['volatility_30d'], Z_WIN)
+```
+
+**Зачем:** нормализованные сигналы (относительно «нормы» последних N дней), единая логика порогов (например |z| > 2).
+
+**Знак и интерпретация:** для `drawdown` глубокая просадка даёт отрицательный z — в composite часто используют **−drawdown_z** или отрицательный вес, чтобы «страх» на дне усиливал сигнал накопления (по желанию).
+
+#### 9️⃣ Composite index (апгрейд 2)
+
+Единый сигнал рынка — взвешенная сумма z-метрик:
+
+```python
+w1, w2, w3, w4 = 0.30, 0.25, 0.20, 0.25  # сумма = 1.0; подобрать под бэктест
+
+# Пример: drawdown — контринтуитивно (глубокая просадка → выше «score накопления»)
+df['composite_onchain'] = (
+    w1 * df['mvrv_z'] +
+    w2 * df['nupl_z'] +
+    w3 * df['sopr_z'] +
+    w4 * (-df['drawdown_z'])   # или +drawdown_z с отрицательным w4
+)
+```
+
+**Опционально:** добавить `w5 * volatility_z` (часто с **отрицательным** весом: высокая волатильность → осторожность).
+
+**Итог:** один ряд `composite_onchain` — удобно накладывать на график цены, задавать правила (например composite < −1 → перекупленность по совокупности proxy).
+
+#### 🔟 Как сделать ещё сильнее (реально прокачка)
+
+**1. Сигнальная система (обязательно)** — поверх `composite_onchain` (или `composite_smooth`, см. ниже) получаешь **готовую стратегию** в виде дискретных меток:
+
+```python
+def signal(x):
+    if pd.isna(x):
+        return None
+    if x < -1.5:
+        return "STRONG BUY"
+    elif x < -0.5:
+        return "BUY"
+    elif x < 0.5:
+        return "HOLD"
+    elif x < 1.5:
+        return "REDUCE"
+    else:
+        return "STRONG REDUCE"
+
+df['signal'] = df['composite_onchain'].apply(signal)
+# Лучше для торговых правил: df['signal'] = df['composite_smooth'].apply(signal)
+```
+
+**Согласование знака:** пороги выше предполагают, что **низкий** composite = зона накопления (как в разделе про −drawdown_z). Если после подбора весов composite «перевёрнут», инвертируй ряд или поменяй знаки порогов.
+
+**2. Сглаживание composite** — убирает дневной шум, сигналы стабильнее:
+
+```python
+df['composite_smooth'] = df['composite_onchain'].rolling(7).mean()
+```
+
+**3. Backtest (обязательно)** — без этого остаётся «красивая идея». Минимальные правила для проверки гипотезы:
+
+- **Покупка:** composite (или `composite_smooth`) **< −1**
+- **Продажа:** **> 1**
+
+Дальше — симуляция позиции (100% BTC / кэш), учёт комиссий, скользящее окно обучения весов, Sharpe / max drawdown сценария. Реализация: `notebooks/test_formulas.ipynb` или отдельный `notebooks/backtest_onchain_proxy.ipynb`.
+
+**4. Визуализация (очень важно)** — один экран, чтобы глазами увидеть **дно цикла** и **пик**:
+
+- ось 1: **цена BTC**
+- ось 2: **composite** (`composite_onchain` или `composite_smooth`)
+
+Пример (Plotly — два ряда, `secondary_y=True`; или matplotlib `twinx()`):
+
+```python
+import matplotlib.pyplot as plt
+
+fig, ax1 = plt.subplots(figsize=(12, 5))
+ax1.plot(df.index, df['price'], color='black', label='BTC price')
+ax2 = ax1.twinx()
+ax2.plot(df.index, df['composite_smooth'], color='tab:blue', alpha=0.85, label='composite (smooth)')
+ax1.set_ylabel('Price (USD)')
+ax2.set_ylabel('Composite')
+fig.tight_layout()
+plt.show()
 ```
 
 **DataFrame содержит колонки:**
@@ -537,15 +676,21 @@ print(df.tail())
 | Колонка | Описание |
 |---------|----------|
 | `price` | Цена BTC |
-| `market_value` | Текущая капитализация |
-| `realized_value` | Упрощённая Realized Value |
-| `mvrv` | MVRV ratio |
-| `nupl` | Net Unrealized Profit/Loss |
-| `sopr` | Упрощённый SOPR |
+| `market_cap` | Рыночная капитализация (из CoinGecko) |
+| `volume` | Объём торгов (из CoinGecko) |
+| `mvrv_proxy` | MVRV proxy (комбинация 180d/365d/730d) |
+| `nupl_proxy` | NUPL proxy |
+| `sopr_proxy` | SOPR proxy (price/MA × volume_change) |
+| `volatility_30d` | Волатильность (30d) |
+| `drawdown` | Просадка от максимума |
+| `mvrv_z`, `nupl_z`, `sopr_z`, `drawdown_z`, `volatility_z` | Rolling Z-score |
+| `composite_onchain` | Единый сигнал (взвешенная сумма z) |
+| `composite_smooth` | Сглаженный composite (например `rolling(7)`) |
+| `signal` | STRONG BUY / BUY / HOLD / REDUCE / STRONG REDUCE |
 
 Можно строить графики через matplotlib или plotly и делать аналогичные анализы.
 
-**Интеграция:** Добавить `pycoingecko` в `requirements.txt`. Модуль `onchain.py` может использовать этот метод как fallback при недоступности LookIntoBitcoin.
+**Интеграция:** Добавить `pycoingecko` в `requirements.txt`. Модуль `onchain.py` может использовать этот метод как fallback при недоступности LookIntoBitcoin; `composite_onchain` / `composite_smooth` / `signal` согласовать с `BitTrendScorer` или вывести в Streamlit. Обязательный шаг — **бэктест** порогов (−1 / +1) в ноутбуке перед боевыми весами.
 
 ---
 

@@ -7,7 +7,7 @@ from typing import TypedDict
 
 
 class OnchainMetrics(TypedDict, total=False):
-    """Контракт он-чейн метрик из LookIntoBitcoin / Glassnode."""
+    """Контракт он-чейн метрик из LookIntoBitcoin / Glassnode / CoinGecko proxy."""
     mvrv_z_score: float | None
     nupl: float | None
     sopr: float | None
@@ -17,3 +17,7 @@ class OnchainMetrics(TypedDict, total=False):
     parser_version: str
     timestamp: str
     source_score: float
+    onchain_source: str
+    onchain_confidence: float
+    onchain_source_score: float
+    onchain_method: str

@@ -114,6 +114,29 @@ def _interpret_onchain(data: Dict) -> str:
     return "нейтральная фаза"
 
 
+def _apply_onchain_quality(
+    result: Dict[str, Any],
+    source: str,
+    confidence: float,
+    source_score: float,
+    method: str = "",
+) -> None:
+    """Provenance для UI: при смешанных источниках — минимум confidence/source_score."""
+    if result.get("onchain_source") in (None, "", "none"):
+        result["onchain_source"] = source
+        result["onchain_confidence"] = float(confidence)
+        result["onchain_source_score"] = float(source_score)
+        result["onchain_method"] = method
+        return
+    if result["onchain_source"] == source:
+        return
+    result["onchain_source"] = f"{result['onchain_source']}+{source}"
+    result["onchain_confidence"] = min(float(result["onchain_confidence"]), float(confidence))
+    result["onchain_source_score"] = min(float(result["onchain_source_score"]), float(source_score))
+    prev_m = result.get("onchain_method") or ""
+    result["onchain_method"] = f"{prev_m}+{method}" if prev_m else method
+
+
 def get_btc_onchain() -> Optional[Dict]:
     """
     Получить он-чейн метрики Bitcoin: MVRV Z-Score, NUPL, SOPR.
@@ -142,6 +165,10 @@ def get_btc_onchain() -> Optional[Dict]:
         "active_addresses": 0,
         "transactions_24h": 0,
         "interpretation": "нет данных",
+        "onchain_source": "none",
+        "onchain_confidence": 0.0,
+        "onchain_source_score": 0.0,
+        "onchain_method": "",
     }
 
     stats = _get_blockchain_stats()
@@ -184,6 +211,13 @@ def get_btc_onchain() -> Optional[Dict]:
             elif in_val > out_val * 1.1:
                 result["exchange_flow_signal"] = -1
 
+        if (
+            result["mvrv_z_score"] is not None
+            or result["nupl"] is not None
+            or result["sopr"] is not None
+        ):
+            _apply_onchain_quality(result, "glassnode", 0.95, 0.9, "api")
+
     # Fallback: LookIntoBitcoin — parse_fast → parse_selenium
     if result["mvrv_z_score"] is None or result["nupl"] is None or result["sopr"] is None:
         try:
@@ -194,16 +228,57 @@ def get_btc_onchain() -> Optional[Dict]:
             elif lib_data.get("source_score", 0) >= 0.4:
                 confidence = lib_data.get("confidence", 0)
                 if confidence >= 0.5:
+                    filled_ltb = False
                     if result["mvrv_z_score"] is None and lib_data.get("mvrv_z_score") is not None:
                         result["mvrv_z_score"] = lib_data["mvrv_z_score"]
+                        filled_ltb = True
                     if result["nupl"] is None and lib_data.get("nupl") is not None:
                         result["nupl"] = lib_data["nupl"]
+                        filled_ltb = True
                     if result["sopr"] is None and lib_data.get("sopr") is not None:
                         val = lib_data["sopr"]
                         result["sopr"] = val
                         result["sopr_signal"] = 1 if val < 1.0 else (-1 if val > 1.05 else 0)
+                        filled_ltb = True
+                    if filled_ltb:
+                        _apply_onchain_quality(
+                            result,
+                            str(lib_data.get("source", "lookintobitcoin")),
+                            float(lib_data.get("confidence", 0)),
+                            float(lib_data.get("source_score", 0)),
+                            str(lib_data.get("method", "")),
+                        )
         except Exception as e:
             logger.debug(f"LookIntoBitcoin fallback: {e}")
+
+    # Третий fallback: CoinGecko proxy (plan §8.10)
+    if result["mvrv_z_score"] is None or result["nupl"] is None or result["sopr"] is None:
+        try:
+            from .coingecko_onchain import get_coingecko_onchain_proxy
+            cg = get_coingecko_onchain_proxy()
+            if cg:
+                filled = False
+                if result["mvrv_z_score"] is None and cg.get("mvrv_z_score") is not None:
+                    result["mvrv_z_score"] = cg["mvrv_z_score"]
+                    filled = True
+                if result["nupl"] is None and cg.get("nupl") is not None:
+                    result["nupl"] = cg["nupl"]
+                    filled = True
+                if result["sopr"] is None and cg.get("sopr") is not None:
+                    val = cg["sopr"]
+                    result["sopr"] = val
+                    result["sopr_signal"] = 1 if val < 1.0 else (-1 if val > 1.05 else 0)
+                    filled = True
+                if filled:
+                    _apply_onchain_quality(
+                        result,
+                        str(cg.get("source", "coingecko")),
+                        float(cg.get("confidence", 0)),
+                        float(cg.get("source_score", 0)),
+                        str(cg.get("method", "")),
+                    )
+        except Exception as e:
+            logger.debug(f"CoinGecko onchain fallback: {e}")
 
     result["interpretation"] = _interpret_onchain(result)
     return result
