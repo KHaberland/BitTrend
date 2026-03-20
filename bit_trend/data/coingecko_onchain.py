@@ -1,9 +1,9 @@
 """
 Proxy MVRV / NUPL / SOPR по plan.md §8.10 — ряды price / market_cap / volume.
 
-Источник рядов для расчёта: plan01 — :func:`build_market_history` (FreeCryptoAPI + SQLite),
-а не прямой запрос CoinGecko ``market_chart``. Отдельно ``_fetch_market_chart_payload``
-остаётся для legacy :class:`CoinGeckoMarketDataSource.get_history`.
+Источник рядов для proxy §8.10 — только plan01: :func:`build_market_history` (FreeCryptoAPI + SQLite).
+Запрос CoinGecko ``market_chart`` здесь не используется; ``_fetch_market_chart_payload`` остаётся
+для :class:`CoinGeckoMarketDataSource.get_history` в цепочке рынка.
 
 Glassnode / LookIntoBitcoin в `onchain.py` подключаются опционально и дозаполняют пропуски.
 """
@@ -64,6 +64,33 @@ def _env_onchain_proxy_min_rows() -> int:
     return max(200, min(2000, n))
 
 
+def _btc_supply_estimate_for_proxy() -> float:
+    """Если у ряда нет market_cap (Binance и т.п.), кап ≈ price × оценка circulating supply BTC."""
+    raw = os.environ.get("ONCHAIN_PROXY_BTC_SUPPLY_EST", "19500000").strip() or "19500000"
+    try:
+        s = float(raw)
+    except ValueError:
+        s = 19_500_000.0
+    return max(1.0, s)
+
+
+def _impute_market_cap_from_price(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    supply = _btc_supply_estimate_for_proxy()
+    need = out["market_cap"].isna()
+    if need.any():
+        prices = pd.to_numeric(out.loc[need, "price"], errors="coerce")
+        out.loc[need, "market_cap"] = prices * supply
+        n = int(need.sum())
+        if logger.isEnabledFor(logging.INFO):
+            logger.info(
+                "proxy §8.10: market_cap = price×%.0f для %d строк (источник без капа; см. ONCHAIN_PROXY_BTC_SUPPLY_EST)",
+                supply,
+                n,
+            )
+    return out
+
+
 def _dataframe_from_market_history(hist: pd.DataFrame) -> Optional[pd.DataFrame]:
     """
     Нормализованный ряд market_source → индекс UTC-время, колонки для :func:`_enrich_810`.
@@ -72,11 +99,14 @@ def _dataframe_from_market_history(hist: pd.DataFrame) -> Optional[pd.DataFrame]
         return None
     min_rows = _env_onchain_proxy_min_rows()
     df = hist.copy()
-    df = df.dropna(subset=["timestamp", "price", "market_cap"])
+    df = df.dropna(subset=["timestamp", "price"])
+    df = _impute_market_cap_from_price(df)
+    df = df.dropna(subset=["market_cap"])
+    df = df[df["market_cap"] > 0]
     if len(df) < min_rows:
         logger.warning(
-            "История для proxy §8.10: мало строк (%d < %d). "
-            "Нужны FREECRYPTO_API_TOKEN / getHistory и/или снимки market_data (plan01 §4.1).",
+            "История для proxy §8.10: мало строк (%d < %d). Только plan01: "
+            "FREECRYPTO_API_TOKEN + getHistory и/или снимки в SQLite market_data (collect_daily_snapshot).",
             len(df),
             min_rows,
         )
@@ -169,11 +199,28 @@ def _dataframe_from_payload(payload: dict) -> Optional[pd.DataFrame]:
     return df.dropna(subset=["price", "market_cap"])
 
 
-def _load_proxy_input_dataframe() -> Optional[pd.DataFrame]:
-    """План plan01: primary FreeCrypto + merge SQLite через build_market_history."""
+def _load_proxy_input_dataframe_with_meta() -> tuple[Optional[pd.DataFrame], Dict[str, str]]:
+    """
+    Только plan01: :func:`build_market_history` (FreeCryptoAPI + SQLite), без CoinGecko для proxy.
+
+    Второй элемент — provenance для :func:`_row_to_public_dict` (пустой dict при отказе).
+    """
     days = _env_onchain_proxy_history_days()
     hist = build_market_history("BTC", days)
-    return _dataframe_from_market_history(hist)
+    df = _dataframe_from_market_history(hist)
+    if df is None:
+        return None, {}
+    return df, {
+        "source": "market_history",
+        "method": "build_market_history_proxy",
+        "parser_version": "market_history_v1",
+    }
+
+
+def _load_proxy_input_dataframe() -> Optional[pd.DataFrame]:
+    """Обратная совместимость тестов: только кадр без meta."""
+    df, _ = _load_proxy_input_dataframe_with_meta()
+    return df
 
 
 def _enrich_810(df: pd.DataFrame) -> pd.DataFrame:
@@ -222,8 +269,9 @@ def _enrich_810(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _row_to_public_dict(df: pd.DataFrame) -> Dict[str, Any]:
+def _row_to_public_dict(df: pd.DataFrame, *, provenance: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """Последняя строка → поля для API/UI."""
+    prov = provenance or {}
     mvrv_z = _last_finite(df["mvrv_z"])
     nupl_raw = _last_finite(df["nupl_proxy"])
     sopr_val = _last_finite(df["sopr_simple"])
@@ -241,10 +289,10 @@ def _row_to_public_dict(df: pd.DataFrame) -> Dict[str, Any]:
         "mvrv_z_score": mvrv_z,
         "nupl": nupl_adj,
         "sopr": sopr_val,
-        "source": "market_history",
-        "method": "build_market_history_proxy",
+        "source": prov.get("source") or "market_history",
+        "method": prov.get("method") or "build_market_history_proxy",
         "confidence": round(PROXY_CONFIDENCE, 2),
-        "parser_version": "market_history_v1",
+        "parser_version": prov.get("parser_version") or "market_history_v1",
         "timestamp": ts,
         "source_score": round(PROXY_SOURCE_SCORE, 2),
         "cg_nupl_z": _last_finite(df["nupl_z"]),
@@ -268,7 +316,7 @@ def get_coingecko_810_dataframe() -> Optional[pd.DataFrame]:
     if not USE_COINGECKO_ONCHAIN:
         logger.warning("Onchain proxy §8.10 выключен (USE_COINGECKO_ONCHAIN=false)")
         return None
-    df = _load_proxy_input_dataframe()
+    df, _ = _load_proxy_input_dataframe_with_meta()
     if df is None or df.empty:
         return None
     return _enrich_810(df)
@@ -293,12 +341,12 @@ def get_coingecko_810_bundle(force_refresh: bool = False) -> Optional[Dict[str, 
     ):
         return dict(_bundle_payload)
 
-    df = _load_proxy_input_dataframe()
+    df, prov = _load_proxy_input_dataframe_with_meta()
     if df is None or df.empty:
         return None
 
     df = _enrich_810(df)
-    public = _row_to_public_dict(df)
+    public = _row_to_public_dict(df, provenance=prov)
 
     if (
         public.get("mvrv_z_score") is None

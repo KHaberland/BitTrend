@@ -1,4 +1,4 @@
-"""Цепочка ончейна: CoinGecko proxy по умолчанию → Glassnode / LookIntoBitcoin дозаполняют пропуски."""
+"""Цепочка ончейна: proxy §8.10 (build_market_history) по умолчанию → Glassnode / LTB дозаполняют пропуски."""
 
 from unittest.mock import patch
 
@@ -38,10 +38,10 @@ def test_coingecko_primary_when_ltb_insufficient(
         "mvrv_z_score": -0.5,
         "nupl": 0.1,
         "sopr": 1.01,
-        "source": "coingecko",
-        "method": "market_chart_proxy",
+        "source": "market_history",
+        "method": "build_market_history_proxy",
         "confidence": 0.55,
-        "parser_version": "coingecko_v2",
+        "parser_version": "market_history_v1",
         "timestamp": "2025-01-01T00:00:00+00:00",
         "source_score": 0.52,
     }
@@ -50,7 +50,7 @@ def test_coingecko_primary_when_ltb_insufficient(
     assert out["mvrv_z_score"] == -0.5
     assert out["nupl"] == 0.1
     assert out["sopr"] == 1.01
-    assert "coingecko" in str(out.get("onchain_source", ""))
+    assert "market_history" in str(out.get("onchain_source", ""))
     mock_cg_proxy.assert_called_once()
     mock_ltb.assert_not_called()
 
@@ -82,10 +82,10 @@ def test_ltb_fills_only_missing_after_coingecko(
         "mvrv_z_score": None,
         "nupl": 0.33,
         "sopr": 0.99,
-        "source": "coingecko",
-        "method": "market_chart_proxy",
+        "source": "market_history",
+        "method": "build_market_history_proxy",
         "confidence": 0.55,
-        "parser_version": "coingecko_v2",
+        "parser_version": "market_history_v1",
         "timestamp": "2025-01-01T00:00:00+00:00",
         "source_score": 0.52,
     }

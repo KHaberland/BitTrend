@@ -94,7 +94,7 @@ Confidence: MEDIUM
 | `BITTREND_SCORING_CONFIG` | Путь к своему YAML со весами/порогами (по умолчанию встроенный `scoring.yaml`) |
 | `HTTP_RATE_MIN_INTERVAL_SEC`, `HTTP_MAX_RETRIES`, `HTTP_BACKOFF_*` | Лимиты и повторы HTTP |
 | `CACHE_TTL`, `CACHE_TTL_FAST`, `CACHE_TTL_SLOW` | TTL кэша: общий и раздельно для «быстрого» и «медленного» блоков данных |
-| `USE_COINGECKO_ONCHAIN`, `ONCHAIN_PROXY_*`, `COINGECKO_ONCHAIN_*`, `COMPOSITE_810_*`, `SCORER_WEIGHT_COMPOSITE_810` | Включение proxy §8.10 (ряд из `build_market_history`), мета доверия и веса composite; `COINGECKO_*` — ключи для fallback-провайдера market_chart |
+| `USE_COINGECKO_ONCHAIN`, `ONCHAIN_PROXY_*`, `COINGECKO_ONCHAIN_*`, `COMPOSITE_810_*`, `SCORER_WEIGHT_COMPOSITE_810` | Включение proxy §8.10 (только FreeCrypto + SQLite из `build_market_history`), мета и веса composite; `COINGECKO_*` — для цепочки `MARKET_DATA_*` / CoinGecko как поставщика рынка, не для §8.10 |
 | `ONCHAIN_DRIFT_*` | S3: дрейф по истории LTB в SQLite (`detect_drift`) — предупреждение в алерте и снижение весов MVRV/NUPL/SOPR (детали в `scoring.yaml` → `onchain_drift`) |
 | `USE_SELENIUM`, `USE_LOOKINTOBITCOIN`, `LOOKINTOBITCOIN_*` | Дозаполнение ончейна парсингом LTB (по умолчанию выкл.), circuit breaker, пороги |
 | `BITTREND_DB_PATH` | Путь к SQLite (по умолчанию `data/bittrend.db`) |
