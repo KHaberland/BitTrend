@@ -30,14 +30,16 @@ PROXY_SOURCE_SCORE = float(os.environ.get("COINGECKO_ONCHAIN_SOURCE_SCORE", "0.5
 
 _bundle_time: Optional[datetime] = None
 _bundle_payload: Optional[Dict[str, Any]] = None
+_bundle_df: Optional[pd.DataFrame] = None
 _BUNDLE_TTL = timedelta(seconds=int(os.environ.get("COINGECKO_BUNDLE_CACHE_SEC", "120")))
 
 
 def clear_coingecko_bundle_cache() -> None:
     """Сброс кэша бандла (например при clear_cache у DataFetcher)."""
-    global _bundle_time, _bundle_payload
+    global _bundle_time, _bundle_payload, _bundle_df
     _bundle_time = None
     _bundle_payload = None
+    _bundle_df = None
 
 
 def _last_finite(series: pd.Series) -> Optional[float]:
@@ -55,11 +57,20 @@ def rolling_z(series: pd.Series, window: int = 365, min_periods: int = 30) -> pd
 
 
 def _fetch_market_chart_payload() -> Optional[dict]:
+    headers = {"User-Agent": "BitTrend/1.0 (onchain proxy)"}
+    # Без ключа часть окружений получает 401; demo/pro — см. документацию CoinGecko
+    demo = os.environ.get("COINGECKO_DEMO_API_KEY", "").strip()
+    pro = os.environ.get("COINGECKO_PRO_API_KEY", "").strip()
+    if pro:
+        headers["x-cg-pro-api-key"] = pro
+    elif demo:
+        headers["x-cg-demo-api-key"] = demo
+
     try:
         r = http_get(
             COINGECKO_CHART_URL,
             params={"vs_currency": "usd", "days": "max"},
-            headers={"User-Agent": "BitTrend/1.0 (onchain proxy)"},
+            headers=headers,
             timeout=REQUEST_TIMEOUT,
         )
         if not r.ok:
@@ -202,7 +213,7 @@ def get_coingecko_810_bundle(force_refresh: bool = False) -> Optional[Dict[str, 
     Полный бандл §8.10 за один HTTP-запрос (с кэшем).
     Ключи cg_* — по рядам CoinGecko; mvrv_z_score/nupl/sopr — для fallback как раньше.
     """
-    global _bundle_time, _bundle_payload
+    global _bundle_time, _bundle_payload, _bundle_df
 
     if not USE_COINGECKO_ONCHAIN:
         logger.debug("CoinGecko onchain proxy выключен (USE_COINGECKO_ONCHAIN=false)")
@@ -237,7 +248,28 @@ def get_coingecko_810_bundle(force_refresh: bool = False) -> Optional[Dict[str, 
 
     _bundle_time = now
     _bundle_payload = dict(public)
+    _bundle_df = df
     return dict(public)
+
+
+def get_coingecko_810_chart_frame(
+    max_points: int = 2500,
+    smooth_window: int = 7,
+) -> Optional[pd.DataFrame]:
+    """
+    Дневные цена и proxy composite §8.10 для UI (upgrade_plan P2 / plan.md §8.10).
+    Использует тот же кэш, что :func:`get_coingecko_810_bundle` — без лишнего HTTP.
+    """
+    get_coingecko_810_bundle()
+    if _bundle_df is None or _bundle_df.empty:
+        return None
+    sub = _bundle_df.tail(int(max(50, max_points))).copy()
+    sub = sub.dropna(subset=["composite_onchain"])
+    if sub.empty:
+        return None
+    w = max(1, int(smooth_window))
+    sub["composite_smooth"] = sub["composite_onchain"].rolling(w, min_periods=1).mean()
+    return sub[["price", "composite_onchain", "composite_smooth"]]
 
 
 def get_coingecko_onchain_proxy() -> Optional[Dict[str, Any]]:

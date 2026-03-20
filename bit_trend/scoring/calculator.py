@@ -168,6 +168,19 @@ class BitTrendScorer:
         c_fg = _fear_greed_to_component(data.get("fear_greed_value"))
 
         w = self._cfg.weights
+        od = self._cfg.onchain_drift
+        drift = data.get("onchain_drift") or {}
+        fact = float(od.weight_factor) if od.enabled else 1.0
+
+        def _eff_weight(metric: str, nominal: float) -> float:
+            if not od.enabled or not drift.get(metric):
+                return nominal
+            return nominal * fact
+
+        w_mvrv = _eff_weight("mvrv_z_score", w.mvrv_z)
+        w_nupl = _eff_weight("nupl", w.nupl)
+        w_sopr = _eff_weight("sopr", w.sopr)
+
         comp = self._cfg.composite_in_scorer
         c_comp810 = _composite_810_to_component(data.get("cg_composite_onchain"), comp.scale)
 
@@ -184,9 +197,9 @@ class BitTrendScorer:
         }
 
         score = (
-            c_mvrv * w.mvrv_z
-            + c_nupl * w.nupl
-            + c_sopr * w.sopr
+            c_mvrv * w_mvrv
+            + c_nupl * w_nupl
+            + c_sopr * w_sopr
             + c_ma200 * w.ma200
             + c_deriv * w.derivatives
             + c_etf * w.etf

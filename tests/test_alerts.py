@@ -28,6 +28,18 @@ class TestAlertGenerator:
         assert "Action:" in result
         assert "Confidence:" in result
 
+    def test_generate_extra_suffix(self):
+        gen = AlertGenerator()
+        r = gen.generate(
+            signal="HOLD",
+            score=10.0,
+            deviation_usdt=0.0,
+            btc_price=70000.0,
+            extra_suffix="тест дрейфа",
+        )
+        assert "⚠" in r
+        assert "тест дрейфа" in r
+
     def test_confidence_high(self):
         """|score| >= 60 → HIGH."""
         assert _confidence_from_score(65) == "HIGH"

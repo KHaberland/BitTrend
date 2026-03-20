@@ -5,16 +5,18 @@ BitTrend — Streamlit UI.
 
 import logging
 import os
-from datetime import datetime
-
 import streamlit as st
 
 from bit_trend.data.fetcher import DataFetcher
 from bit_trend.data.binance import get_btc_klines
+from bit_trend.config.loader import get_scoring_config
 from bit_trend.scoring.calculator import BitTrendScorer
 from bit_trend.portfolio.manager import PortfolioManager
 from bit_trend.portfolio.trade import TradeCalculator
 from bit_trend.alerts.generator import generate_from_portfolio
+from bit_trend.data.storage import append_signal_history, get_signal_history
+from bit_trend.data.coingecko_onchain import get_coingecko_810_chart_frame
+from bit_trend.execution.ccxt_executor import execute_rebalance_part, live_trading_status_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,8 +45,6 @@ def _init_session_state():
         st.session_state.parts = []
     if "deviation_usdt" not in st.session_state:
         st.session_state.deviation_usdt = 0.0
-    if "signal_history" not in st.session_state:
-        st.session_state.signal_history = []
 
 
 def _compute_and_store(usdt: float, btc_amount: float, btc_price: float):
@@ -57,6 +57,7 @@ def _compute_and_store(usdt: float, btc_amount: float, btc_price: float):
     score, signal, components = scorer.compute(data)
 
     btc_value_usdt = btc_amount * btc_price
+    drift_note = (data.get("onchain_drift_note") or "").strip() or None
     recommendation = generate_from_portfolio(
         usdt=usdt,
         btc_value_usdt=btc_value_usdt,
@@ -64,6 +65,7 @@ def _compute_and_store(usdt: float, btc_amount: float, btc_price: float):
         signal=signal,
         btc_price=btc_price,
         num_parts=3,
+        extra_suffix=drift_note,
     )
 
     pm = PortfolioManager()
@@ -79,26 +81,47 @@ def _compute_and_store(usdt: float, btc_amount: float, btc_price: float):
     st.session_state.deviation_usdt = deviation_usdt
     st.session_state.metrics_data = data
     st.session_state.components = components
+    st.session_state.last_btc_price = float(btc_price or 0.0)
 
-    # История сигналов (опционально)
-    st.session_state.signal_history.append({
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "score": score,
-        "signal": signal,
-    })
-    if len(st.session_state.signal_history) > 20:
-        st.session_state.signal_history = st.session_state.signal_history[-20:]
+    dedupe_sec = int(os.getenv("BITTREND_SIGNAL_DEDUPE_SEC", "90"))
+    append_signal_history(
+        score=score,
+        signal=signal,
+        btc_price=btc_price if btc_price else None,
+        usdt=usdt,
+        btc_amount=btc_amount,
+        deviation_usdt=deviation_usdt,
+        recommendation=recommendation,
+        dedupe_within_seconds=dedupe_sec,
+    )
 
 
 def _execute_part(part_num: int):
-    """MVP: логирование Execute Part N без реальных ордеров."""
+    """MVP по умолчанию; при P3 (ccxt + env) — реальный рыночный ордер."""
     parts = st.session_state.get("parts", [])
     if part_num < 1 or part_num > len(parts):
         st.warning(f"Часть {part_num} недоступна.")
         return
     amount = parts[part_num - 1]
-    logger.info(f"[MVP] Execute Part {part_num}: {amount:.2f} USDT (логирование, ордер не исполнен)")
-    st.toast(f"Part {part_num}: {amount:,.0f} USDT — логирование (MVP, ордер не исполнен)")
+    deviation = float(st.session_state.get("deviation_usdt") or 0.0)
+    metrics = st.session_state.get("metrics_data") or {}
+    drift = bool(metrics.get("onchain_drift_any"))
+    btc_p = float(
+        metrics.get("btc_price")
+        or st.session_state.get("last_btc_price")
+        or 0.0
+    )
+    res = execute_rebalance_part(
+        part_num,
+        amount,
+        deviation,
+        btc_p,
+        onchain_drift_any=drift,
+    )
+    if res.ok:
+        st.toast(res.message)
+    else:
+        st.error(res.message)
 
 
 def main():
@@ -122,6 +145,10 @@ def main():
             format="%.4f",
         )
         st.divider()
+        st.markdown(live_trading_status_message())
+        st.caption(
+            "P3: без `BITTREND_LIVE_TRADING` + `ACK=YES` + ключей ccxt работает только MVP-логирование."
+        )
         if st.button("Recalculate Score", type="primary", use_container_width=True):
             DataFetcher(ttl_seconds=CACHE_TTL).clear_cache()
             st.session_state.score = None
@@ -139,6 +166,10 @@ def main():
     if st.session_state.score is None:
         with st.spinner("Расчёт score и рекомендаций…"):
             _compute_and_store(usdt, btc_amount, btc_price)
+        st.session_state._last_usdt = usdt
+        st.session_state._last_btc = btc_amount
+
+    metrics_data = st.session_state.get("metrics_data") or data
 
     # Главная страница (5.1)
     st.title("BitTrend")
@@ -174,9 +205,14 @@ def main():
 
     recommendation = st.session_state.recommendation or "—"
     st.info(f"**Recommended Action:** {recommendation}")
+    if metrics_data.get("onchain_drift_any"):
+        st.warning(
+            "Обнаружен возможный **дрейф** в сохранённой истории LTB (SQLite) по метрикам: "
+            f"**{', '.join(metrics_data.get('onchain_drift_labels') or [])}**. "
+            f"Веса MVRV/NUPL/SOPR временно умножены на **{get_scoring_config().onchain_drift.weight_factor:g}** (см. `onchain_drift` в scoring.yaml, S3)."
+        )
 
     # Метрики по порядку (1, 2, 3, …); качество ончейна — сразу видно (upgrade_plan D2)
-    metrics_data = st.session_state.get("metrics_data") or data
     components = st.session_state.get("components") or {}
 
     def _safe_float(x, default=None):
@@ -233,6 +269,10 @@ def main():
             return f"{val:{fmt_str}}"
         return str(val)
 
+    _sconf = get_scoring_config()
+    _w810 = _sconf.composite_in_scorer.weight
+    _810_weight_label = f"{_w810 * 100:.0f}%" if _w810 else "0% (только блок §8.10)"
+
     metrics_list = [
         (1, "MVRV Z-Score", metrics_data.get("mvrv_z_score"), "25%", components.get("mvrv_z_score")),
         (2, "NUPL", metrics_data.get("nupl"), "15%", components.get("nupl")),
@@ -243,8 +283,12 @@ def main():
         (7, "Macro (signal)", metrics_data.get("macro_signal"), "10%", components.get("macro")),
         (8, "Fear & Greed", metrics_data.get("fear_greed_value"), "5%", components.get("fear_greed")),
     ]
+    if metrics_data.get("cg_composite_onchain") is not None or (components.get("composite_810") is not None and abs(float(components.get("composite_810") or 0)) > 1e-9):
+        metrics_list.append(
+            (9, "§8.10 cg_composite_onchain (z)", metrics_data.get("cg_composite_onchain"), _810_weight_label, components.get("composite_810")),
+        )
 
-    with st.expander("📊 Все метрики (1–8)"):
+    with st.expander("📊 Все метрики (1–8+§8.10)"):
         for num, name, raw_val, weight, comp in metrics_list:
             if isinstance(raw_val, str):
                 raw_str = raw_val
@@ -292,17 +336,20 @@ def main():
 
     cg_c = metrics_data.get("cg_composite_onchain")
     if cg_c is not None or metrics_data.get("cg_volatility_30d") is not None:
-        w810 = float(os.environ.get("SCORER_WEIGHT_COMPOSITE_810", "0") or 0)
         with st.expander("📈 §8.10 ончейн-composite (CoinGecko proxy, S1)"):
             st.caption(
                 "Отдельный ряд по plan.md §8.10: rolling z по прокси MVRV/NUPL/SOPR, волатильность 30d, drawdown; "
-                "composite не дублирует веса MVRV/NUPL/SOPR в основном score, если не включён SCORER_WEIGHT_COMPOSITE_810."
+                "composite не дублирует веса MVRV/NUPL/SOPR в основном score, пока в scoring.yaml `composite_in_scorer.weight` = 0 "
+                "(или задайте SCORER_WEIGHT_COMPOSITE_810 в .env)."
             )
             st.metric("cg_composite_onchain (z)", f"{cg_c:.3f}" if cg_c is not None else "—", help="Взвешенная сумма z; низкие значения часто ближе к зоне накопления в примерах плана.")
             st.caption(f"Зона (ориентир): **{_cg810_zone(cg_c)}**")
             c810_comp = components.get("composite_810")
             if c810_comp is not None:
-                st.caption(f"Вклад в шкалу -100…+100 (для смешивания): **{c810_comp:+.1f}**; вес в score: **{w810:g}**")
+                st.caption(
+                    f"Вклад в шкалу -100…+100 (для смешивания): **{c810_comp:+.1f}**; "
+                    f"вес в score (E2): **{_w810:g}**, scale: **{_sconf.composite_in_scorer.scale:g}**"
+                )
             zcols = st.columns(2)
             with zcols[0]:
                 st.markdown(
@@ -377,7 +424,7 @@ def main():
     # Опционально: график MA200, история сигналов (5.5)
     st.divider()
     with st.expander("График MA200 и история сигналов"):
-        tab1, tab2 = st.tabs(["MA200 vs Price", "История сигналов"])
+        tab1, tab2, tab3 = st.tabs(["MA200 vs Price", "История сигналов", "Composite §8.10 vs цена (P2)"])
 
         with tab1:
             prices = get_btc_klines(400)
@@ -411,13 +458,77 @@ def main():
                 st.caption("Недостаточно данных для MA200.")
 
         with tab2:
-            history = st.session_state.get("signal_history", [])
+            st.caption(
+                "Персистентная история (P1): SQLite `data/bittrend.db`, таблица `signal_history`. "
+                "Опциональный дубликат в CSV — `BITTREND_SIGNAL_CSV_PATH` в `.env`; окно дедупликации — `BITTREND_SIGNAL_DEDUPE_SEC` (сек)."
+            )
+            history = get_signal_history(500)
             if history:
                 import pandas as pd
                 df_history = pd.DataFrame(history)
                 st.dataframe(df_history, use_container_width=True, hide_index=True)
             else:
-                st.caption("История сигналов пуста пока не выполнен расчёт.")
+                st.caption("История сигналов пуста: выполните расчёт (первый запуск или «Recalculate Score»).")
+
+        with tab3:
+            st.caption(
+                "Два ряда по plan.md §8.10: **цена BTC** (CoinGecko `market_chart`) и **cg_composite_onchain** "
+                "(взвешенная сумма z по прокси MVRV/NUPL/SOPR, drawdown, volatility). "
+                "Сглаживание `composite_smooth` — rolling(7) как в плане. Данные из того же кэша, что и блок §8.10 после S1/D1."
+            )
+            cwide = st.slider("Число последних дневных точек", min_value=200, max_value=4000, value=2000, step=100, key="cg_chart_points")
+            cwsmooth = st.slider("Окно сглаживания composite (дней)", min_value=1, max_value=30, value=7, key="cg_chart_smooth")
+            cg_df = get_coingecko_810_chart_frame(max_points=cwide, smooth_window=cwsmooth)
+            if cg_df is not None and not cg_df.empty:
+                import plotly.graph_objects as go
+                from plotly.subplots import make_subplots
+
+                x = cg_df.index
+                fig_c = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_c.add_trace(
+                    go.Scatter(
+                        x=x,
+                        y=cg_df["price"],
+                        name="BTC (close, USD)",
+                        line=dict(color="#F7931A"),
+                    ),
+                    secondary_y=False,
+                )
+                fig_c.add_trace(
+                    go.Scatter(
+                        x=x,
+                        y=cg_df["composite_onchain"],
+                        name="composite_onchain (z)",
+                        line=dict(color="rgba(66, 133, 244, 0.35)", width=1),
+                    ),
+                    secondary_y=True,
+                )
+                fig_c.add_trace(
+                    go.Scatter(
+                        x=x,
+                        y=cg_df["composite_smooth"],
+                        name=f"composite_smooth ({cwsmooth}d)",
+                        line=dict(color="#1a73e8", width=2),
+                    ),
+                    secondary_y=True,
+                )
+                fig_c.update_layout(
+                    title="Composite proxy (§8.10) vs цена BTC",
+                    height=420,
+                    margin=dict(l=0, r=0, t=48, b=0),
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    hovermode="x unified",
+                )
+                fig_c.update_yaxes(title_text="USD", secondary_y=False)
+                fig_c.update_yaxes(title_text="composite (z)", secondary_y=True)
+                fig_c.add_hline(y=1.0, line_dash="dot", line_color="rgba(128,128,128,0.5)", secondary_y=True)
+                fig_c.add_hline(y=-1.0, line_dash="dot", line_color="rgba(128,128,128,0.5)", secondary_y=True)
+                st.plotly_chart(fig_c, use_container_width=True)
+            else:
+                st.info(
+                    "Ряд недоступен: включите `USE_COINGECKO_ONCHAIN`, проверьте доступ к CoinGecko API "
+                    "(ключ при необходимости) или дождитесь загрузки данных на главной странице."
+                )
 
 
 if __name__ == "__main__":

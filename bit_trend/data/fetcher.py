@@ -15,6 +15,7 @@ from .macro import get_macro_data
 from .onchain import get_btc_onchain
 from .etf import get_etf_flows
 from .coingecko_onchain import get_coingecko_810_bundle, clear_coingecko_bundle_cache
+from .onchain_drift import onchain_drift_payload_for_fetcher
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,26 @@ def _env_ttl_seconds(name: str, default: int) -> int:
     if raw is None or not str(raw).strip():
         return default
     return int(str(raw).strip())
+
+
+def _apply_onchain_drift(result: Dict[str, Any]) -> None:
+    """Актуальные флаги дрейфа из SQLite на каждый ответ fetch_all (в т.ч. при полном попадании в кэш)."""
+    from bit_trend.config.loader import get_scoring_config
+
+    _od = get_scoring_config().onchain_drift
+    result.update(
+        onchain_drift_payload_for_fetcher(
+            enabled=_od.enabled,
+            history_limit=_od.history_limit,
+            window=_od.window,
+            thresholds={
+                "mvrv_z_score": _od.threshold_mvrv_z_score,
+                "nupl": _od.threshold_nupl,
+                "sopr": _od.threshold_sopr,
+            },
+            source_substring=_od.source_substring,
+        )
+    )
 
 
 _CG810_RESULT_KEYS = (
@@ -91,7 +112,9 @@ class DataFetcher:
         need_slow = not use_cache or not self._slow_cache_valid()
 
         if use_cache and not need_fast and not need_slow:
-            return {**_shared_fast_cache, **_shared_slow_cache}
+            merged = {**_shared_fast_cache, **_shared_slow_cache}
+            _apply_onchain_drift(merged)
+            return merged
 
         btc_price = 0.0
         ma200 = None
@@ -259,6 +282,7 @@ class DataFetcher:
             **cg810,
         }
 
+        _apply_onchain_drift(result)
         return result
 
     def clear_cache(self) -> None:

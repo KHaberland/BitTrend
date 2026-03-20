@@ -57,3 +57,15 @@ coingecko_composite:
   w_volatility: -0.10
   z_window: 365
   z_min_periods: 30
+
+# S3: дрейф по SQLite-истории (строки от LookIntoBitcoin) → предупреждение в алерте и умножение весов MVRV/NUPL/SOPR на weight_factor при флаге по метрике
+onchain_drift:
+  enabled: true
+  history_limit: 500
+  window: 10
+  thresholds:
+    mvrv_z_score: 0.5
+    nupl: 0.12
+    sopr: 0.12
+  weight_factor: 0.25
+  source_substring: lookintobitcoin

@@ -65,6 +65,20 @@ class CoingeckoCompositeConfig:
 
 
 @dataclass(frozen=True)
+class OnchainDriftConfig:
+    """S3: дрейф по SQLite-истории LTB → флаги в fetcher, снижение весов в скорере, текст алерта."""
+
+    enabled: bool
+    history_limit: int
+    window: int
+    threshold_mvrv_z_score: float
+    threshold_nupl: float
+    threshold_sopr: float
+    weight_factor: float
+    source_substring: str
+
+
+@dataclass(frozen=True)
 class ScoringConfig:
     weights: ScorerWeights
     composite_in_scorer: CompositeInScorer
@@ -73,6 +87,7 @@ class ScoringConfig:
     allocation: List[AllocationRow]
     allocation_fallback_btc_pct: float
     coingecko_composite: CoingeckoCompositeConfig
+    onchain_drift: OnchainDriftConfig
 
 
 def _default_yaml_path() -> Path:
@@ -152,6 +167,33 @@ def _parse_scoring_dict(raw: Dict[str, Any]) -> ScoringConfig:
         z_min_periods=_as_int(cg["z_min_periods"], "coingecko_composite.z_min_periods"),
     )
 
+    od = raw.get("onchain_drift")
+    if od is None:
+        onchain_drift = OnchainDriftConfig(
+            enabled=True,
+            history_limit=500,
+            window=10,
+            threshold_mvrv_z_score=0.5,
+            threshold_nupl=0.12,
+            threshold_sopr=0.12,
+            weight_factor=0.25,
+            source_substring="lookintobitcoin",
+        )
+    else:
+        th = od.get("thresholds") or {}
+        onchain_drift = OnchainDriftConfig(
+            enabled=bool(od.get("enabled", True)),
+            history_limit=_as_int(od.get("history_limit", 500), "onchain_drift.history_limit"),
+            window=_as_int(od.get("window", 10), "onchain_drift.window"),
+            threshold_mvrv_z_score=_as_float(
+                th.get("mvrv_z_score", 0.5), "onchain_drift.thresholds.mvrv_z_score"
+            ),
+            threshold_nupl=_as_float(th.get("nupl", 0.12), "onchain_drift.thresholds.nupl"),
+            threshold_sopr=_as_float(th.get("sopr", 0.12), "onchain_drift.thresholds.sopr"),
+            weight_factor=_as_float(od.get("weight_factor", 0.25), "onchain_drift.weight_factor"),
+            source_substring=str(od.get("source_substring", "lookintobitcoin") or ""),
+        )
+
     return ScoringConfig(
         weights=weights,
         composite_in_scorer=composite_in_scorer,
@@ -160,6 +202,7 @@ def _parse_scoring_dict(raw: Dict[str, Any]) -> ScoringConfig:
         allocation=allocation,
         allocation_fallback_btc_pct=fallback,
         coingecko_composite=coingecko,
+        onchain_drift=onchain_drift,
     )
 
 
@@ -190,6 +233,25 @@ def _env_override_raw(raw: Dict[str, Any]) -> Dict[str, Any]:
         cg["z_window"] = int(os.environ["COMPOSITE_810_Z_WINDOW"])
     if os.environ.get("COMPOSITE_810_Z_MIN_PERIODS") is not None:
         cg["z_min_periods"] = int(os.environ["COMPOSITE_810_Z_MIN_PERIODS"])
+
+    od = data.setdefault("onchain_drift", {})
+    od_th = od.setdefault("thresholds", {})
+    if os.environ.get("ONCHAIN_DRIFT_ENABLED") is not None:
+        od["enabled"] = os.environ["ONCHAIN_DRIFT_ENABLED"].lower() in ("true", "1", "yes")
+    if os.environ.get("ONCHAIN_DRIFT_HISTORY_LIMIT") is not None:
+        od["history_limit"] = int(os.environ["ONCHAIN_DRIFT_HISTORY_LIMIT"])
+    if os.environ.get("ONCHAIN_DRIFT_WINDOW") is not None:
+        od["window"] = int(os.environ["ONCHAIN_DRIFT_WINDOW"])
+    if os.environ.get("ONCHAIN_DRIFT_WEIGHT_FACTOR") is not None:
+        od["weight_factor"] = float(os.environ["ONCHAIN_DRIFT_WEIGHT_FACTOR"])
+    if os.environ.get("ONCHAIN_DRIFT_SOURCE_SUBSTRING") is not None:
+        od["source_substring"] = os.environ["ONCHAIN_DRIFT_SOURCE_SUBSTRING"]
+    if os.environ.get("ONCHAIN_DRIFT_THRESHOLD_MVRV") is not None:
+        od_th["mvrv_z_score"] = float(os.environ["ONCHAIN_DRIFT_THRESHOLD_MVRV"])
+    if os.environ.get("ONCHAIN_DRIFT_THRESHOLD_NUPL") is not None:
+        od_th["nupl"] = float(os.environ["ONCHAIN_DRIFT_THRESHOLD_NUPL"])
+    if os.environ.get("ONCHAIN_DRIFT_THRESHOLD_SOPR") is not None:
+        od_th["sopr"] = float(os.environ["ONCHAIN_DRIFT_THRESHOLD_SOPR"])
 
     return data
 

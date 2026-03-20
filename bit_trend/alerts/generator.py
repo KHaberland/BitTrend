@@ -68,7 +68,8 @@ class AlertGenerator:
         score: float,
         deviation_usdt: float,
         btc_price: float,
-        parts: Optional[List[float]] = None
+        parts: Optional[List[float]] = None,
+        extra_suffix: Optional[str] = None,
     ) -> str:
         """
         Сформировать полную рекомендацию.
@@ -86,7 +87,10 @@ class AlertGenerator:
         action = _format_action(deviation_usdt, btc_price, parts)
         confidence = _confidence_from_score(score)
 
-        return f"SIGNAL: {signal} / Action: {action} / Confidence: {confidence}"
+        line = f"SIGNAL: {signal} / Action: {action} / Confidence: {confidence}"
+        if extra_suffix:
+            line = f"{line} / ⚠ {extra_suffix}"
+        return line
 
     def generate_short(self, signal: str, score: float) -> str:
         """
@@ -102,7 +106,8 @@ def generate_from_portfolio(
     score: float,
     signal: str,
     btc_price: float,
-    num_parts: int = 3
+    num_parts: int = 3,
+    extra_suffix: Optional[str] = None,
 ) -> str:
     """
     Этап 4.3: Единая точка входа — расчёт отклонения, частей сделки и форматирование.
@@ -138,6 +143,7 @@ def generate_from_portfolio(
         deviation_usdt=deviation_usdt,
         btc_price=btc_price,
         parts=parts if len(parts) > 1 else None,
+        extra_suffix=extra_suffix,
     )
 
 

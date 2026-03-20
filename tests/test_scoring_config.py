@@ -26,6 +26,8 @@ def test_default_yaml_loads():
     assert cfg.signal_bands[0].min_score == 50
     assert cfg.signal_bands[0].signal == "BUY"
     assert cfg.coingecko_composite.w_drawdown == 0.25
+    assert cfg.onchain_drift.enabled is True
+    assert cfg.onchain_drift.weight_factor == pytest.approx(0.25)
 
 
 def test_env_overrides_composite_weights(monkeypatch, tmp_path: Path):
