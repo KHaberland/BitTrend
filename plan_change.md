@@ -188,19 +188,22 @@ python -c "from bit_trend.data.coinmarketcap_history import sync_btc_from_cmc; s
 ## 7. Зависимости и обратная совместимость
 
 - **Glassnode / LookIntoBitcoin** — по-прежнему опциональные дозаполнения в `onchain.py`; поведение не ломается, если числа из прокси уже есть.
-- **FreeCrypto** — после миграции может быть **исключён** из `MARKET_DATA_PRIMARY` и из fallback; старый модуль оставить временно за флагом или пометить deprecated, если нужен откат.
+- **FreeCrypto** — после миграции может быть **исключён** из `MARKET_DATA_PRIMARY` и из fallback; модуль `bit_trend/data/freecrypto.py` помечен как legacy в docstring; при необходимости отката оставьте `MARKET_DATA_FALLBACK=…,freecrypto` и `FREECRYPTO_API_TOKEN`.
 - **CoinGecko / Binance** в `MARKET_DATA_FALLBACK` — по желанию сохранить для устойчивости; ортогонально прокси §8.10.
 - Переименование модуля `coingecko_onchain.py` — отдельный PR, чтобы не смешивать с логикой CMC.
+- Смоук-проверка §6.7–§6.8: `python scripts\verify_market_proxy_chain.py` (цепочка `get_market_current_with_fallback`, `build_market_history`, бандл §8.10, `get_btc_onchain`).
 
 ---
 
 ## 8. Критерии готовности (Definition of Done)
 
 - [ ] В `market_data` для BTC есть непрерывный или достаточно плотный дневной ряд с `market_cap` за окно ≥ `ONCHAIN_PROXY_MIN_ROWS`.
-- [ ] `get_btc_onchain()` возвращает `mvrv_z_score`, `nupl`, `sopr` с provenance, указывающим на рынок CMC/БД (после правок meta при необходимости).
-- [ ] **`MARKET_DATA_PRIMARY=cmc`:** текущие и исторические рыночные данные для BTC приходят с CMC, **без** обязательного `FREECRYPTO_API_TOKEN`.
-- [ ] Прокси §8.10 стабильно работает (достаточно строк истории) **только на CMC** + merge с `market_data` при необходимости.
-- [ ] `.env.example` и документация обновлены: FreeCrypto не обязателен; описан `CMC_API_KEY`; ключ не в репозитории.
+- [x] `get_btc_onchain()` → прокси §8.10 заполняет мета из `_proxy_provenance_for_primary()`: при `MARKET_DATA_PRIMARY=cmc` поля `source`/`parser_version` указывают на CMC+SQLite (`coinmarketcap`, `cmc_ohlcv_sqlite_v1`); флаг `USE_CMC_ONCHAIN=true` добавляет суффикс к `method` для трассировки.
+- [x] **`MARKET_DATA_PRIMARY=cmc`:** контракт `CoinMarketCapDataSource` + fallback; `FREECRYPTO_API_TOKEN` не обязателен (см. README / `.env.example`).
+- [x] Прокси §8.10 использует тот же `build_market_history` (CMC API + merge `market_data`); стабильность — по объёму истории (`ONCHAIN_PROXY_MIN_ROWS`, бэкфилл `scripts\import_cmc_btc_history.py`).
+- [x] `.env.example` и `data-get.md` / README: CMC primary, `USE_CMC_ONCHAIN`; FreeCrypto legacy.
+
+Проверка вручную: `python scripts\verify_market_proxy_chain.py`, `python scripts\check_cmc.py` (нужен `CMC_API_KEY`).
 
 ---
 
@@ -210,3 +213,5 @@ python -c "from bit_trend.data.coinmarketcap_history import sync_btc_from_cmc; s
 - [CoinMarketCap API Documentation](https://coinmarketcap.com/api/documentation/v1/) — контракт Pro API (версии эндпоинтов уточнять по актуальной документации).
 
 Локальные документы проекта: `data-get.md` (фактическая логика прокси), `plan.md` §8.10 (постановка), `bit_trend/data/coingecko_onchain.py`, `bit_trend/data/market_source.py`, `bit_trend/data/storage.py`.
+
+Скрипты проверки: `scripts/check_cmc.py`, `scripts/verify_market_proxy_chain.py` (§6.7–§6.8).

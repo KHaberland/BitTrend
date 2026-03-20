@@ -91,3 +91,28 @@ def test_proxy_no_coingecko_when_market_history_short():
             df = cg.get_coingecko_810_dataframe()
     assert df is None
     mock_cg.assert_not_called()
+
+
+def test_proxy_provenance_cmc_primary(monkeypatch):
+    """plan_change §8: meta для primary=cmc указывает на CoinMarketCap + SQLite."""
+    import bit_trend.data.coingecko_onchain as cg
+
+    monkeypatch.setenv("MARKET_DATA_PRIMARY", "cmc")
+    monkeypatch.setattr(cg, "USE_CMC_ONCHAIN", False)
+    p = cg._proxy_provenance_for_primary()
+    assert p["source"] == "coinmarketcap"
+    assert p["parser_version"] == "cmc_ohlcv_sqlite_v1"
+    assert p["method"] == "build_market_history_proxy"
+
+    monkeypatch.setattr(cg, "USE_CMC_ONCHAIN", True)
+    p2 = cg._proxy_provenance_for_primary()
+    assert "+USE_CMC_ONCHAIN" in p2["method"]
+
+
+def test_proxy_provenance_freecrypto_primary(monkeypatch):
+    monkeypatch.setenv("MARKET_DATA_PRIMARY", "freecrypto")
+    import bit_trend.data.coingecko_onchain as cg
+
+    p = cg._proxy_provenance_for_primary()
+    assert p["source"] == "freecrypto_api"
+    assert "freecrypto" in p["parser_version"]

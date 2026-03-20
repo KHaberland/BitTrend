@@ -201,7 +201,7 @@ def get_btc_onchain() -> Optional[Dict]:
     if addr_data:
         result["active_addresses"] = int(addr_data[-1]["y"]) if addr_data else 0
 
-    # 1) Основной путь по умолчанию — CoinGecko proxy (plan §8.10)
+    # 1) Основной путь по умолчанию — прокси §8.10 (`coingecko_onchain`: ряд build_market_history, см. data-get.md)
     if result["mvrv_z_score"] is None or result["nupl"] is None or result["sopr"] is None:
         try:
             from .coingecko_onchain import get_coingecko_onchain_proxy

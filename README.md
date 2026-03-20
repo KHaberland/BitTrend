@@ -82,7 +82,7 @@ Confidence: MEDIUM
 
 ## Переменные окружения
 
-**Обязательных ключей нет** — прокси MVRV/NUPL/SOPR (§8.10) строится из `build_market_history` (FreeCrypto + снимки SQLite `market_data`, plan01); для длинной истории желателен `FREECRYPTO_API_TOKEN` и/или ежедневный `collect_daily_snapshot`. Glassnode и LookIntoBitcoin — опциональное дозаполнение. Остальное: Binance/Bybit, Alternative.me, Farside и т.д.
+**Обязательных ключей нет** — прокси MVRV/NUPL/SOPR (§8.10) строится из `build_market_history` (по умолчанию **CoinMarketCap** + снимки SQLite `market_data`, plan01 / plan_change). Нужно **не меньше ~180** осмысленных точек price+cap в окне (порог `ONCHAIN_PROXY_MIN_ROWS`); без **`CMC_API_KEY`** primary не отдаёт историю — дальше срабатывает **`MARKET_DATA_FALLBACK`** или только накопленный `market_data` / **`collect_daily_snapshot`**. **`FREECRYPTO_API_TOKEN`** больше не обязателен (опциональный legacy-источник). Glassnode и LookIntoBitcoin — опциональное дозаполнение. Остальное: Binance/Bybit, Alternative.me, Farside и т.д.
 
 Создайте `.env` на основе `.env.example`. Кратко о группах:
 
@@ -94,11 +94,11 @@ Confidence: MEDIUM
 | `BITTREND_SCORING_CONFIG` | Путь к своему YAML со весами/порогами (по умолчанию встроенный `scoring.yaml`) |
 | `HTTP_RATE_MIN_INTERVAL_SEC`, `HTTP_MAX_RETRIES`, `HTTP_BACKOFF_*` | Лимиты и повторы HTTP |
 | `CACHE_TTL`, `CACHE_TTL_FAST`, `CACHE_TTL_SLOW` | TTL кэша: общий и раздельно для «быстрого» и «медленного» блоков данных |
-| `USE_COINGECKO_ONCHAIN`, `ONCHAIN_PROXY_*`, `COINGECKO_ONCHAIN_*`, `COMPOSITE_810_*`, `SCORER_WEIGHT_COMPOSITE_810` | Включение proxy §8.10 (только FreeCrypto + SQLite из `build_market_history`), мета и веса composite; `COINGECKO_*` — для цепочки `MARKET_DATA_*` / CoinGecko как поставщика рынка, не для §8.10 |
+| `USE_COINGECKO_ONCHAIN`, `USE_CMC_ONCHAIN`, `ONCHAIN_PROXY_*`, `COINGECKO_ONCHAIN_*`, `COMPOSITE_810_*`, `SCORER_WEIGHT_COMPOSITE_810` | Proxy §8.10: `build_market_history` (по умолчанию CMC + SQLite); `USE_CMC_ONCHAIN` — метка в provenance (plan_change §6.9). `COINGECKO_*` — для цепочки `MARKET_DATA_*` / CoinGecko как поставщика рынка, не для §8.10 chart |
 | `ONCHAIN_DRIFT_*` | S3: дрейф по истории LTB в SQLite (`detect_drift`) — предупреждение в алерте и снижение весов MVRV/NUPL/SOPR (детали в `scoring.yaml` → `onchain_drift`) |
 | `USE_SELENIUM`, `USE_LOOKINTOBITCOIN`, `LOOKINTOBITCOIN_*` | Дозаполнение ончейна парсингом LTB (по умолчанию выкл.), circuit breaker, пороги |
 | `BITTREND_DB_PATH` | Путь к SQLite (по умолчанию `data/bittrend.db`) |
-| `FREECRYPTO_API_TOKEN`, `FREECRYPTO_API_BASE`, `MARKET_DATA_PRIMARY`, `MARKET_DATA_FALLBACK`, `MARKET_CURRENT_CACHE_TTL_SEC`, `MARKET_SOURCE_*`, `MARKET_CIRCUIT_BREAKER`, `MARKET_CB_*` | Рыночные price/cap/volume (plan01): primary FreeCrypto, цепочка fallback, TTL кэша, ретраи / circuit breaker; справочный YAML — `bit_trend/config/market_data.example.yaml` |
+| `CMC_API_KEY`, `CMC_API_BASE`, `CMC_OHLCV_CHUNK_DAYS`, `FREECRYPTO_API_TOKEN`, `FREECRYPTO_API_BASE`, `MARKET_DATA_PRIMARY`, `MARKET_DATA_FALLBACK`, `MARKET_CURRENT_CACHE_TTL_SEC`, `MARKET_SOURCE_*`, `MARKET_CIRCUIT_BREAKER`, `MARKET_CB_*` | Рыночные price/cap/volume: primary **cmc** (CoinMarketCap) или legacy FreeCrypto, цепочка fallback, TTL кэша, ретраи / circuit breaker; справочный YAML — `bit_trend/config/market_data.example.yaml` |
 | `COINGECKO_VERIFY` | При `1` / `true` включает интеграционную сверку с CoinGecko (`pytest -m integration`, нужен токен FreeCrypto и сеть) |
 | `BITTREND_SIGNAL_CSV_PATH`, `BITTREND_SIGNAL_DEDUPE_SEC` | P1: дублировать историю сигналов из UI в CSV; окно дедупликации повторных расчётов (сек), `0` — писать каждый раз |
 | `BITTREND_LIVE_TRADING`, `BITTREND_LIVE_TRADING_ACK` | P3: live-ордера только при `ACK=YES` ровно; иначе всегда MVP |
@@ -116,7 +116,7 @@ python -m pytest tests/ -v
 # Только быстрые unit/integration-локальные (без живых API plan01 §11.2)
 python -m pytest tests/ -v -m "not integration"
 
-# Сверка FreeCrypto vs CoinGecko (сеть + COINGECKO_VERIFY=1 + FREECRYPTO_API_TOKEN)
+# Сверка FreeCrypto vs CoinGecko (сеть + COINGECKO_VERIFY=1 + FREECRYPTO_API_TOKEN; при primary cmc — опционально)
 $env:COINGECKO_VERIFY = "1"
 python -m pytest tests/ -v -m integration
 
@@ -146,14 +146,21 @@ BitTrend/
 
 | Метрика | Источник |
 |---------|----------|
-| Цена spot (plan01), при необходимости cap/volume | Цепочка `MARKET_DATA_*` (по умолчанию FreeCrypto → fallback) |
+| Цена spot (plan01), при необходимости cap/volume | Цепочка `MARKET_DATA_*` (по умолчанию **cmc** → binance, coingecko) |
 | MA200 | Binance API |
 | Funding, OI (среднее при двух источниках) | Binance API + Bybit API (публичные) |
-| MVRV, NUPL, SOPR | **Прокси §8.10** из `build_market_history` (FreeCrypto + SQLite); опционально Glassnode / LookIntoBitcoin дозаполняют пропуски |
+| MVRV, NUPL, SOPR | **Прокси §8.10** из `build_market_history` (CoinMarketCap + SQLite `market_data`); опционально Glassnode / LookIntoBitcoin дозаполняют пропуски |
 | Volatility / drawdown / composite §8.10 | Те же ряды price/cap/volume, что и proxy (кэш бандла `COINGECKO_BUNDLE_CACHE_SEC`) |
 | ETF flows | Coinglass (с `COINGLASS_API_KEY`) → иначе парсинг **Farside** (часто через Selenium + таблица на странице) |
 | Macro | FRED (ставки, 10Y, DXY `DTWEXBGS`, CPI при `FRED_API_KEY`); S&P 500 — **yfinance** |
 | Fear & Greed | Alternative.me |
+
+## Ссылки (CoinMarketCap / документация API)
+
+- [CoinMarketCap](https://coinmarketcap.com/) — продукт и рыночные данные.
+- [CoinMarketCap API Documentation v1](https://coinmarketcap.com/api/documentation/v1/) — Pro API (`quotes/latest`, `ohlcv/historical`, заголовок `X-CMC_PRO_API_KEY`).
+
+Локально: `plan_change.md`, `data-get.md` (прокси §8.10), `scripts\check_cmc.py`, `scripts\verify_market_proxy_chain.py`.
 
 ## Лицензия
 

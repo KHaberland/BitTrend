@@ -1,6 +1,6 @@
 """
 Абстракция источников price / market_cap / volume (plan01 §8).
-Потребители ожидают единый контракт; конкретные провайдеры — freecrypto, coingecko, binance.
+Потребители ожидают единый контракт; провайдеры — cmc (CoinMarketCap), freecrypto, coingecko, binance.
 """
 
 from __future__ import annotations
@@ -150,7 +150,9 @@ def _is_transient_market_error(exc: BaseException) -> bool:
         pass
     if isinstance(exc, ValueError):
         s = str(exc)
-        if "FREECRYPTO_API_TOKEN" in s or "не задан" in s:
+        if "FREECRYPTO_API_TOKEN" in s or "CMC_API_KEY" in s:
+            return False
+        if "не задан" in s:
             return False
         if any(x in s for x in ("HTTP 5", "HTTP 502", "HTTP 503", "HTTP 504")):
             return True
@@ -239,7 +241,7 @@ def _try_source_current(name: str, src: MarketDataSource, symbol: str) -> Option
 
 
 def _env_market_chain() -> List[str]:
-    raw = os.environ.get("MARKET_DATA_PRIMARY", "freecrypto").strip() or "freecrypto"
+    raw = os.environ.get("MARKET_DATA_PRIMARY", "cmc").strip() or "cmc"
     fall = os.environ.get("MARKET_DATA_FALLBACK", "binance,coingecko").strip()
     parts = [raw] + [p.strip() for p in fall.split(",") if p.strip()]
     seen: set[str] = set()
@@ -256,8 +258,11 @@ def _source_cls_map() -> Dict[str, Type[MarketDataSource]]:
     from .freecrypto import FreeCryptoDataSource
     from .market_binance import BinanceMarketDataSource
     from .market_coingecko import CoinGeckoMarketDataSource
+    from .market_coinmarketcap import CoinMarketCapDataSource
 
     return {
+        "cmc": CoinMarketCapDataSource,
+        "coinmarketcap": CoinMarketCapDataSource,
         "freecrypto": FreeCryptoDataSource,
         "binance": BinanceMarketDataSource,
         "coingecko": CoinGeckoMarketDataSource,
@@ -348,9 +353,9 @@ def build_market_history(
     Пустой/короткий ответ API не блокирует ряд — локальные снимки заполняют окно. При совпадении timestamp
     предпочтение строке API (провайдер), затем снимок.
     """
-    primary = (primary or os.environ.get("MARKET_DATA_PRIMARY", "freecrypto") or "freecrypto").lower()
+    primary = (primary or os.environ.get("MARKET_DATA_PRIMARY", "cmc") or "cmc").lower()
     classes = _source_cls_map()
-    cls = classes.get(primary) or classes["freecrypto"]
+    cls = classes.get(primary) or classes["cmc"]
     api_df = normalize_history_df(cls().get_history(symbol, days))
     window_end = pd.Timestamp.now(tz="UTC")
     window_start = window_end - pd.Timedelta(days=max(1, int(days)))

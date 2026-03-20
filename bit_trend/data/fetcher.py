@@ -9,8 +9,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
+from bit_trend.config.loader import _try_load_dotenv
+
 from .binance import get_btc_price, get_btc_derivatives, get_ma200
-from .market_source import get_market_current_with_fallback
+from .market_source import clear_market_current_cache, get_market_current_with_fallback
 from .fear_greed import get_fear_greed_index
 from .macro import get_macro_data
 from .onchain import get_btc_onchain
@@ -139,6 +141,8 @@ class DataFetcher:
         Быстрые источники обновляются чаще; макро/ончейн/ETF — по отдельному TTL.
         """
         global _shared_fast_cache, _shared_fast_time, _shared_slow_cache, _shared_slow_time
+
+        _try_load_dotenv()
 
         need_fast = not use_cache or not self._fast_cache_valid()
         need_slow = not use_cache or not self._slow_cache_valid()
@@ -336,8 +340,10 @@ class DataFetcher:
     def clear_cache(self) -> None:
         """Очистить оба кэша."""
         global _shared_fast_cache, _shared_fast_time, _shared_slow_cache, _shared_slow_time
+        _try_load_dotenv()
         _shared_fast_cache = None
         _shared_fast_time = None
         _shared_slow_cache = None
         _shared_slow_time = None
         clear_coingecko_bundle_cache()
+        clear_market_current_cache()

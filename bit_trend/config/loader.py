@@ -15,9 +15,14 @@ import yaml
 
 
 def _try_load_dotenv() -> None:
+    """Подхват `.env` из корня репозитория (рядом с `bit_trend/`), затем из текущего cwd."""
     try:
+        from pathlib import Path
+
         from dotenv import load_dotenv
 
+        root = Path(__file__).resolve().parents[2]
+        load_dotenv(root / ".env")
         load_dotenv()
     except ImportError:
         pass

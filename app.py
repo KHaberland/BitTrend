@@ -5,11 +5,22 @@ BitTrend — Streamlit UI.
 
 import logging
 import os
+from pathlib import Path
+
 import streamlit as st
+
+from bit_trend.config.loader import _try_load_dotenv, get_scoring_config
+
+_try_load_dotenv()
+try:
+    from dotenv import load_dotenv as _load_dotenv_file
+
+    _load_dotenv_file(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 from bit_trend.data.fetcher import DataFetcher
 from bit_trend.data.binance import get_btc_klines
-from bit_trend.config.loader import get_scoring_config
 from bit_trend.scoring.calculator import BitTrendScorer
 from bit_trend.portfolio.manager import PortfolioManager
 from bit_trend.portfolio.trade import TradeCalculator
@@ -153,7 +164,10 @@ def main():
             DataFetcher(ttl_seconds=CACHE_TTL).clear_cache()
             st.session_state.score = None
             st.rerun()
-        st.caption("Обновить данные и пересчитать score.")
+        st.caption(
+            "Обновить данные и пересчитать score (сбрасывает кэш fetcher, §8.10, котировок). "
+            "Ctrl+F5 в браузере не перезапускает Streamlit — при смене `.env` остановите процесс и снова `streamlit run app.py`."
+        )
 
     # Загрузка данных (с индикатором)
     fetcher = DataFetcher(ttl_seconds=CACHE_TTL)

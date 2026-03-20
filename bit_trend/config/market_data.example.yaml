@@ -3,10 +3,15 @@
 # Этот файл — справочный снимок для документации и ручного копирования в .env.
 
 data_source:
-  primary: freecrypto
+  primary: cmc # CoinMarketCap Pro; имя в MARKET_DATA_PRIMARY
   fallback:
     - binance
     - coingecko
+
+coinmarketcap:
+  api_base: https://pro-api.coinmarketcap.com/v1
+  # api_key задаётся только через CMC_API_KEY
+  # ohlcv/historical дробится: CMC_OHLCV_CHUNK_DAYS (по умолчанию 120)
 
 freecrypto:
   api_base: https://api.freecryptoapi.com/v1

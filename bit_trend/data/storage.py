@@ -294,6 +294,86 @@ def save_market_snapshot(row: Dict[str, Any]) -> bool:
         conn.close()
 
 
+def _market_row_timestamp_iso(ts: Any) -> Optional[str]:
+    """UTC ISO для PK timestamp; согласовано с pd.Timestamp в normalize_history_df."""
+    if ts is None:
+        return None
+    try:
+        t = pd.Timestamp(ts)
+        if pd.isna(t):
+            return None
+        if t.tzinfo is None:
+            t = t.tz_localize(timezone.utc)
+        else:
+            t = t.tz_convert(timezone.utc)
+        return t.isoformat()
+    except (ValueError, TypeError):
+        return None
+
+
+def save_market_rows(
+    rows: List[Dict[str, Any]],
+    *,
+    symbol: str = "BTC",
+    source: str = "coinmarketcap",
+    require_market_cap: bool = True,
+) -> int:
+    """
+    Батч INSERT OR REPLACE в market_data (plan_change §3). Тот же sanity, что save_market_snapshot.
+    Возвращает число принятых строк (после фильтрации).
+    """
+    from .market_source import sanity_check_market_row
+
+    sym_u = str(symbol or "BTC").upper()
+    src_s = str(source or "")
+    batch: List[tuple] = []
+    for raw in rows:
+        ts_iso = _market_row_timestamp_iso(raw.get("timestamp"))
+        if not ts_iso:
+            continue
+        row = {
+            "timestamp": ts_iso,
+            "symbol": sym_u,
+            "price": raw.get("price"),
+            "market_cap": raw.get("market_cap"),
+            "volume": raw.get("volume"),
+            "source": src_s,
+        }
+        strict_cap = str(row.get("source") or "").lower() != "binance"
+        if not sanity_check_market_row(row, require_market_cap=strict_cap and require_market_cap):
+            continue
+        price = row.get("price")
+        try:
+            if price is None or float(price) <= 0:
+                continue
+        except (TypeError, ValueError):
+            continue
+        cap = row.get("market_cap")
+        vol = row.get("volume")
+        cap_v = float(cap) if cap is not None else None
+        vol_v = float(vol) if vol is not None else None
+        batch.append((ts_iso, sym_u, float(price), cap_v, vol_v, src_s))
+    if not batch:
+        return 0
+    init_db()
+    conn = _get_conn()
+    try:
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO market_data (timestamp, symbol, price, market_cap, volume, source)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            batch,
+        )
+        conn.commit()
+        return len(batch)
+    except Exception as e:
+        logger.warning("save_market_rows: %s", e)
+        return 0
+    finally:
+        conn.close()
+
+
 def get_last_market_snapshot_time(symbol: str) -> Optional[datetime]:
     """Максимальный timestamp (UTC) в market_data для символа; для §4 — интервал между снимками."""
     init_db()

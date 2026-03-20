@@ -1,5 +1,10 @@
 """
 FreeCryptoAPI — текущие котировки и история (plan01 §3).
+
+Deprecated для primary: при миграции на CoinMarketCap задайте ``MARKET_DATA_PRIMARY=cmc`` и
+``CMC_API_KEY`` (plan_change.md §2, §7). Модуль оставлен для отката и опционального
+``MARKET_DATA_FALLBACK=…,freecrypto`` при заданном ``FREECRYPTO_API_TOKEN``.
+
 Требуется FREECRYPTO_API_TOKEN (query `token`); см. https://freecryptoapi.com/documentation
 """
 
@@ -47,7 +52,7 @@ class FreeCryptoDataSource(MarketDataSource):
         if not r.ok:
             raise ValueError(f"FreeCryptoAPI getData HTTP {r.status_code}")
         body = r.json()
-        row = _unwrap_payload(body)
+        row = _row_from_get_data_body(body, sym)
         if row is None:
             err = body.get("error") if isinstance(body, dict) else None
             raise ValueError(err or "FreeCryptoAPI: пустой ответ")
@@ -76,11 +81,36 @@ class FreeCryptoDataSource(MarketDataSource):
                 logger.debug("FreeCrypto getHistory HTTP %s", r.status_code)
                 return normalize_history_df(pd.DataFrame())
             body = r.json()
+            if isinstance(body, dict) and body.get("status") is False:
+                err = body.get("error") or body.get("message") or "getHistory отклонён"
+                logger.warning("FreeCrypto getHistory: %s", err)
             df = _history_json_to_df(body, sym)
             return normalize_history_df(df)
         except Exception as e:
             logger.debug("FreeCrypto getHistory: %s", e)
             return normalize_history_df(pd.DataFrame())
+
+
+def _row_from_get_data_body(body: Any, symbol: str) -> Optional[Dict[str, Any]]:
+    """Актуальный формат getData: ``{\"status\":\"success\",\"symbols\":[{\"symbol\":\"BTC\",\"last\":\"...\"}]}``."""
+    if not isinstance(body, dict):
+        return None
+    st = body.get("status")
+    if st is False:
+        return None
+    syms = body.get("symbols")
+    if st == "success" and isinstance(syms, list) and syms:
+        u = symbol.strip().upper()
+        pick: Optional[Dict[str, Any]] = None
+        for block in syms:
+            if isinstance(block, dict) and str(block.get("symbol", "")).upper() == u:
+                pick = block
+                break
+        if pick is None and len(syms) == 1 and isinstance(syms[0], dict):
+            pick = syms[0]
+        if pick is not None:
+            return pick
+    return _unwrap_payload(body)
 
 
 def _unwrap_payload(body: Any) -> Optional[Dict[str, Any]]:
@@ -112,9 +142,24 @@ def _normalize_current_row(raw: Dict[str, Any], symbol: str) -> Dict[str, Any]:
                 vol = val
     if vol is None:
         vol = _to_float(raw.get("volume"))
+    if price is None:
+        price = _to_float(raw.get("last"))
+    if price is not None and price > 0 and (cap is None or cap <= 0):
+        try:
+            est = float(os.environ.get("ONCHAIN_PROXY_BTC_SUPPLY_EST", "19500000").strip() or "19500000")
+        except ValueError:
+            est = 19_500_000.0
+        cap = float(price) * max(1.0, est)
     ts = raw.get("timestamp")
     if ts is None:
-        ts = int(time.time())
+        ds = raw.get("date")
+        if isinstance(ds, str) and ds.strip():
+            try:
+                ts = int(pd.Timestamp(ds, tz="UTC").timestamp())
+            except (ValueError, TypeError, OSError):
+                ts = int(time.time())
+        else:
+            ts = int(time.time())
     elif isinstance(ts, float):
         ts = int(ts)
     sym = str(raw.get("symbol", symbol)).upper()
@@ -135,6 +180,26 @@ def _to_float(v: Any) -> Optional[float]:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _coerce_history_timestamps(series: pd.Series) -> pd.Series:
+    """
+    FreeCrypto и др.: метка может быть в ms, s или ISO-строке.
+    Порог 1e11: типичные unix-seconds < 1e11, unix-ms > 1e11.
+    """
+    raw = series.copy()
+    num = pd.to_numeric(raw, errors="coerce")
+    out = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns, UTC]")
+    mask = num.notna()
+    if mask.any():
+        mx = float(num.loc[mask].max())
+        unit = "ms" if mx > 1e11 else "s"
+        parsed = pd.to_datetime(num.loc[mask], unit=unit, utc=True, errors="coerce")
+        out.loc[mask] = parsed
+    left = out.isna() & raw.notna()
+    if left.any():
+        out.loc[left] = pd.to_datetime(raw.loc[left], utc=True, errors="coerce")
+    return out
 
 
 def _history_json_to_df(body: Any, symbol: str) -> pd.DataFrame:
@@ -175,9 +240,7 @@ def _history_json_to_df(body: Any, symbol: str) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", errors="coerce").fillna(
-        pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-    )
+    df["timestamp"] = _coerce_history_timestamps(df["timestamp"])
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df["market_cap"] = pd.to_numeric(df["market_cap"], errors="coerce")
     df["volume"] = pd.to_numeric(df["volume"], errors="coerce")

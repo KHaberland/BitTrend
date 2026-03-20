@@ -30,8 +30,11 @@ REQUEST_TIMEOUT = 25
 
 USE_COINGECKO_ONCHAIN = os.environ.get("USE_COINGECKO_ONCHAIN", "true").lower() in ("true", "1", "yes")
 
-# Минимум строк (дней при дневных снимках) для rolling-окон §8.10; совпадает с прежним порогом CoinGecko.
-_MIN_PROXY_ROWS_DEFAULT = 400
+# plan_change.md §4, §6.9: явная отметка режима CMC для прокси/UI (не отключает API — первичен MARKET_DATA_PRIMARY)
+USE_CMC_ONCHAIN = os.environ.get("USE_CMC_ONCHAIN", "false").lower() in ("true", "1", "yes")
+
+# Минимум строк для rv_730 (min_periods 180) и хвоста proxy; 400 было слишком жёстко без длинной БД.
+_MIN_PROXY_ROWS_DEFAULT = 180
 
 # Прокси-модель — ниже, чем у LTB/Glassnode; conservative meta для UI
 PROXY_CONFIDENCE = float(os.environ.get("COINGECKO_ONCHAIN_CONFIDENCE", "0.55"))
@@ -44,13 +47,13 @@ _BUNDLE_TTL = timedelta(seconds=int(os.environ.get("COINGECKO_BUNDLE_CACHE_SEC",
 
 
 def _env_onchain_proxy_history_days() -> int:
-    """Глубина окна для build_market_history (по умолчанию макс. как у FreeCrypto getHistory)."""
+    """Глубина окна для build_market_history (по умолчанию до 3650 дн., как у FreeCrypto getHistory)."""
     raw = os.environ.get("ONCHAIN_PROXY_HISTORY_DAYS", "3650").strip() or "3650"
     try:
         d = int(raw)
     except ValueError:
         d = 3650
-    return max(_MIN_PROXY_ROWS_DEFAULT, min(3650, d))
+    return max(1, min(3650, d))
 
 
 def _env_onchain_proxy_min_rows() -> int:
@@ -61,7 +64,7 @@ def _env_onchain_proxy_min_rows() -> int:
         n = int(raw)
     except ValueError:
         n = _MIN_PROXY_ROWS_DEFAULT
-    return max(200, min(2000, n))
+    return max(_MIN_PROXY_ROWS_DEFAULT, min(2000, n))
 
 
 def _btc_supply_estimate_for_proxy() -> float:
@@ -96,6 +99,11 @@ def _dataframe_from_market_history(hist: pd.DataFrame) -> Optional[pd.DataFrame]
     Нормализованный ряд market_source → индекс UTC-время, колонки для :func:`_enrich_810`.
     """
     if hist is None or hist.empty:
+        logger.warning(
+            "proxy §8.10: нет строк после build_market_history — задайте CMC_API_KEY (MARKET_DATA_PRIMARY=cmc), "
+            "FREECRYPTO_API_TOKEN для legacy, и/или накапливайте снимки market_data (collect_daily_snapshot), "
+            "см. plan01 §4.1 и scripts/import_cmc_btc_history.py."
+        )
         return None
     min_rows = _env_onchain_proxy_min_rows()
     df = hist.copy()
@@ -105,8 +113,9 @@ def _dataframe_from_market_history(hist: pd.DataFrame) -> Optional[pd.DataFrame]
     df = df[df["market_cap"] > 0]
     if len(df) < min_rows:
         logger.warning(
-            "История для proxy §8.10: мало строк (%d < %d). Только plan01: "
-            "FREECRYPTO_API_TOKEN + getHistory и/или снимки в SQLite market_data (collect_daily_snapshot).",
+            "История для proxy §8.10: мало строк (%d < %d). План: MARKET_DATA_PRIMARY=cmc + CMC_API_KEY "
+            "и/или бэкфилл SQLite (scripts/import_cmc_btc_history.py), снимки collect_daily_snapshot; "
+            "legacy: FREECRYPTO_API_TOKEN.",
             len(df),
             min_rows,
         )
@@ -199,9 +208,40 @@ def _dataframe_from_payload(payload: dict) -> Optional[pd.DataFrame]:
     return df.dropna(subset=["price", "market_cap"])
 
 
+def _proxy_provenance_for_primary() -> Dict[str, str]:
+    """
+    Meta для UI/API: источник ряда §8.10 согласно ``MARKET_DATA_PRIMARY`` (plan_change §8 DoD).
+
+    При ``USE_CMC_ONCHAIN=true`` для ветки CMC добавляется суффикс метода для явной трассировки env.
+    """
+    primary = (os.environ.get("MARKET_DATA_PRIMARY", "cmc") or "cmc").strip().lower()
+    use_cmc_flag = USE_CMC_ONCHAIN
+
+    if primary in ("cmc", "coinmarketcap"):
+        method = "build_market_history_proxy"
+        if use_cmc_flag:
+            method = f"{method}+USE_CMC_ONCHAIN"
+        return {
+            "source": "coinmarketcap",
+            "method": method,
+            "parser_version": "cmc_ohlcv_sqlite_v1",
+        }
+    if primary == "freecrypto":
+        return {
+            "source": "freecrypto_api",
+            "method": "build_market_history_proxy",
+            "parser_version": "freecrypto_market_v1",
+        }
+    return {
+        "source": f"{primary}_market",
+        "method": "build_market_history_proxy",
+        "parser_version": "market_history_v1",
+    }
+
+
 def _load_proxy_input_dataframe_with_meta() -> tuple[Optional[pd.DataFrame], Dict[str, str]]:
     """
-    Только plan01: :func:`build_market_history` (FreeCryptoAPI + SQLite), без CoinGecko для proxy.
+    Только plan01: :func:`build_market_history` (primary API + SQLite ``market_data``), без CoinGecko chart для proxy.
 
     Второй элемент — provenance для :func:`_row_to_public_dict` (пустой dict при отказе).
     """
@@ -210,11 +250,7 @@ def _load_proxy_input_dataframe_with_meta() -> tuple[Optional[pd.DataFrame], Dic
     df = _dataframe_from_market_history(hist)
     if df is None:
         return None, {}
-    return df, {
-        "source": "market_history",
-        "method": "build_market_history_proxy",
-        "parser_version": "market_history_v1",
-    }
+    return df, _proxy_provenance_for_primary()
 
 
 def _load_proxy_input_dataframe() -> Optional[pd.DataFrame]:
