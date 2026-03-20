@@ -12,7 +12,8 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 import pandas as pd
-import requests
+
+from .http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ def rolling_z(series: pd.Series, window: int = 365, min_periods: int = 30) -> pd
 
 def _fetch_market_chart_payload() -> Optional[dict]:
     try:
-        r = requests.get(
+        r = http_get(
             COINGECKO_CHART_URL,
             params={"vs_currency": "usd", "days": "max"},
             headers={"User-Agent": "BitTrend/1.0 (onchain proxy)"},
@@ -183,6 +184,24 @@ def _row_to_public_dict(df: pd.DataFrame) -> Dict[str, Any]:
         "cg_composite_onchain": composite,
     }
     return base
+
+
+def get_coingecko_810_dataframe() -> Optional[pd.DataFrame]:
+    """
+    Полный дневной ряд §8.10 (все прокси и z-колонки) для бэктеста и калибровки — upgrade_plan S2 / plan.md §8.10.
+
+    Один HTTP-запрос к market_chart; кэш бандла (:func:`get_coingecko_810_bundle`) не заполняется.
+    """
+    if not USE_COINGECKO_ONCHAIN:
+        logger.warning("CoinGecko onchain proxy выключен (USE_COINGECKO_ONCHAIN=false)")
+        return None
+    payload = _fetch_market_chart_payload()
+    if not payload:
+        return None
+    df = _dataframe_from_payload(payload)
+    if df is None or df.empty:
+        return None
+    return _enrich_810(df)
 
 
 def get_coingecko_810_bundle(force_refresh: bool = False) -> Optional[Dict[str, Any]]:

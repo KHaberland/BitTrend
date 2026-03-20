@@ -8,7 +8,7 @@ import os
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
-import requests
+from .http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ def _get_fred_observations(
     try:
         end = datetime.now().strftime("%Y-%m-%d")
         start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
-        r = requests.get(
+        r = http_get(
             f"{FRED_BASE}/series/observations",
             params={
                 "series_id": series_id,

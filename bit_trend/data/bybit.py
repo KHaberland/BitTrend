@@ -4,9 +4,10 @@
 """
 
 import logging
-import requests
 import time
 from typing import Optional, Dict, Tuple
+
+from .http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ def _get_bybit_funding_rate() -> Optional[Tuple[float, float]]:
     Returns (funding_rate, funding_rate_8h_avg) или None.
     """
     try:
-        r = requests.get(
+        r = http_get(
             f"{BYBIT_API}/funding/history",
             params={"category": "linear", "symbol": "BTCUSDT", "limit": 3},
             timeout=10,
@@ -51,7 +52,7 @@ def _get_bybit_open_interest(btc_price: float) -> Optional[Tuple[float, float]]:
         now_ms = int(time.time() * 1000)
         week_ms = 7 * 24 * 60 * 60 * 1000
 
-        r = requests.get(
+        r = http_get(
             f"{BYBIT_API}/open-interest",
             params={
                 "category": "linear",

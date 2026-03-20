@@ -93,7 +93,7 @@ BitTrend/
 │   └── alerts/        # Alert Generator — форматирование рекомендаций
 ├── app.py             # Streamlit UI
 ├── tests/             # Unit и integration тесты
-├── notebooks/         # Jupyter для отладки формул
+├── notebooks/         # Jupyter: формулы; backtest_onchain_proxy.ipynb (S2, §8.10)
 ├── data/              # SQLite (onchain_history)
 ├── requirements.txt
 └── .env.example

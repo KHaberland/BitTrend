@@ -649,7 +649,7 @@ df['composite_smooth'] = df['composite_onchain'].rolling(7).mean()
 - **Покупка:** composite (или `composite_smooth`) **< −1**
 - **Продажа:** **> 1**
 
-Дальше — симуляция позиции (100% BTC / кэш), учёт комиссий, скользящее окно обучения весов, Sharpe / max drawdown сценария. Реализация: `notebooks/test_formulas.ipynb` или отдельный `notebooks/backtest_onchain_proxy.ipynb`.
+Дальше — симуляция позиции (100% BTC / кэш), учёт комиссий, скользящее окно обучения весов, Sharpe / max drawdown сценария. Реализация: **`notebooks/backtest_onchain_proxy.ipynb`** (калибровка S2); для формул скорера — `notebooks/test_formulas.ipynb`.
 
 **4. Визуализация (очень важно)** — один экран, чтобы глазами увидеть **дно цикла** и **пик**:
 

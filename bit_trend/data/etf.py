@@ -8,8 +8,9 @@ import logging
 import os
 import re
 import time
-import requests
 from typing import Optional, Dict, Any, List, Tuple
+
+from .http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ def _get_etf_coinglass() -> Optional[Dict]:
     if not api_key:
         return None
     try:
-        r_list = requests.get(
+        r_list = http_get(
             f"{COINGLASS_BASE}/api/etf/bitcoin/list",
             headers={"CG-API-KEY": api_key},
             timeout=15
@@ -42,7 +43,7 @@ def _get_etf_coinglass() -> Optional[Dict]:
             return None
         etfs = data_list.get("data", [])
 
-        r_flow = requests.get(
+        r_flow = http_get(
             f"{COINGLASS_BASE}/api/etf/bitcoin/flow-history",
             headers={"CG-API-KEY": api_key},
             timeout=15

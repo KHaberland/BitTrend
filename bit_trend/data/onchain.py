@@ -10,8 +10,9 @@
 import logging
 import os
 import time
-import requests
 from typing import Optional, Dict, Any
+
+from .http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ GLASSNODE_URL = "https://api.glassnode.com/v1/metrics"
 def _get_blockchain_stats() -> Optional[Dict]:
     """Blockchain.com stats — бесплатно, без ключа."""
     try:
-        r = requests.get(BLOCKCHAIN_STATS, timeout=10)
+        r = http_get(BLOCKCHAIN_STATS, timeout=10)
         r.raise_for_status()
         return r.json()
     except Exception as e:
@@ -34,7 +35,7 @@ def _get_blockchain_stats() -> Optional[Dict]:
 def _get_blockchain_chart(chart_name: str, days: int = 30) -> Optional[list]:
     """Blockchain.com charts."""
     try:
-        r = requests.get(
+        r = http_get(
             f"{BLOCKCHAIN_CHARTS}/{chart_name}",
             params={"timespan": f"{days}days", "format": "json"},
             timeout=10
@@ -60,7 +61,7 @@ def _get_glassnode_metric(
     try:
         until = int(time.time())
         since = until - days * 24 * 3600
-        r = requests.get(
+        r = http_get(
             f"{GLASSNODE_URL}/{endpoint}",
             params={
                 "a": asset,

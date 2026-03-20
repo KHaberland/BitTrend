@@ -12,7 +12,7 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List, Tuple
 
-import requests
+from .http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +220,7 @@ def _record_success() -> None:
 
 def _fetch_page(path: str) -> Optional[str]:
     try:
-        r = requests.get(f"{BASE_URL}{path}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        r = http_get(f"{BASE_URL}{path}", headers=HEADERS, timeout=REQUEST_TIMEOUT)
         if not r.ok:
             logger.debug(f"LookIntoBitcoin {path}: HTTP {r.status_code}")
             return None

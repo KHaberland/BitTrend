@@ -3,8 +3,9 @@
 """
 
 import logging
-import requests
 from typing import Optional, Dict
+
+from .http_client import http_get
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ def get_fear_greed_index() -> Optional[Dict]:
         {"value": int, "classification": str, "timestamp": int} или None при ошибке
     """
     try:
-        response = requests.get(FNG_URL, params={"limit": 1}, timeout=10)
+        response = http_get(FNG_URL, params={"limit": 1}, timeout=10)
         response.raise_for_status()
         data = response.json()
         if data.get("metadata", {}).get("error"):
