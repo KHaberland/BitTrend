@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 PARSER_VERSION = "v2_pattern_extraction"
 
-# Feature flags — быстро отключать источники, тестировать
-USE_LOOKINTOBITCOIN = os.environ.get("USE_LOOKINTOBITCOIN", "true").lower() in ("true", "1", "yes")
+# Feature flags — быстро отключать источники, тестировать (по умолчанию выкл.: основной путь — CoinGecko proxy)
+USE_LOOKINTOBITCOIN = os.environ.get("USE_LOOKINTOBITCOIN", "false").lower() in ("true", "1", "yes")
 USE_SELENIUM = os.environ.get("USE_SELENIUM", "true").lower() in ("true", "1", "yes")
 
 # Кэш

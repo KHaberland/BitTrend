@@ -82,22 +82,24 @@ Confidence: MEDIUM
 
 ## Переменные окружения
 
-**Обязательных ключей нет** — приложение собирает то, что доступно без API (Binance/Bybit публичные эндпоинты, Alternative.me, Farside, CoinGecko `market_chart`, при желании — парсинг LTB).
+**Обязательных ключей нет** — ончейн MVRV/NUPL/SOPR по умолчанию с CoinGecko `market_chart` (прокси §8.10); Glassnode и парсинг LookIntoBitcoin включаются флагами. Остальное: Binance/Bybit публичные эндпоинты, Alternative.me, Farside и т.д.
 
 Создайте `.env` на основе `.env.example`. Кратко о группах:
 
 | Переменная | Описание |
 |------------|----------|
 | `FRED_API_KEY` | Fed Funds, 10Y, DXY (FRED `DTWEXBGS`), CPI — без ключа эти ряды недоступны; S&P всё равно подтягивается через yfinance |
-| `GLASSNODE_API_KEY` | Ончейн MVRV/NUPL/SOPR напрямую с Glassnode |
+| `USE_GLASSNODE`, `GLASSNODE_API_KEY` | Дозаполнение ончейна после CoinGecko (по умолчанию Glassnode выключен) |
 | `COINGLASS_API_KEY` | Данные ETF через Coinglass (иначе — парсинг Farside и т.п., см. код) |
 | `BITTREND_SCORING_CONFIG` | Путь к своему YAML со весами/порогами (по умолчанию встроенный `scoring.yaml`) |
 | `HTTP_RATE_MIN_INTERVAL_SEC`, `HTTP_MAX_RETRIES`, `HTTP_BACKOFF_*` | Лимиты и повторы HTTP |
 | `CACHE_TTL`, `CACHE_TTL_FAST`, `CACHE_TTL_SLOW` | TTL кэша: общий и раздельно для «быстрого» и «медленного» блоков данных |
-| `USE_COINGECKO_ONCHAIN`, `COINGECKO_*`, `COMPOSITE_810_*`, `SCORER_WEIGHT_COMPOSITE_810` | Третий fallback ончейна и веса §8.10 |
+| `USE_COINGECKO_ONCHAIN`, `COINGECKO_*`, `COMPOSITE_810_*`, `SCORER_WEIGHT_COMPOSITE_810` | Основной proxy ончейна (§8.10) и веса composite |
 | `ONCHAIN_DRIFT_*` | S3: дрейф по истории LTB в SQLite (`detect_drift`) — предупреждение в алерте и снижение весов MVRV/NUPL/SOPR (детали в `scoring.yaml` → `onchain_drift`) |
-| `USE_SELENIUM`, `USE_LOOKINTOBITCOIN`, `LOOKINTOBITCOIN_*` | Парсинг LTB, circuit breaker, пороги свежести |
+| `USE_SELENIUM`, `USE_LOOKINTOBITCOIN`, `LOOKINTOBITCOIN_*` | Дозаполнение ончейна парсингом LTB (по умолчанию выкл.), circuit breaker, пороги |
 | `BITTREND_DB_PATH` | Путь к SQLite (по умолчанию `data/bittrend.db`) |
+| `FREECRYPTO_API_TOKEN`, `FREECRYPTO_API_BASE`, `MARKET_DATA_PRIMARY`, `MARKET_DATA_FALLBACK`, `MARKET_CURRENT_CACHE_TTL_SEC`, `MARKET_SOURCE_*`, `MARKET_CIRCUIT_BREAKER`, `MARKET_CB_*` | Рыночные price/cap/volume (plan01): primary FreeCrypto, цепочка fallback, TTL кэша, ретраи / circuit breaker; справочный YAML — `bit_trend/config/market_data.example.yaml` |
+| `COINGECKO_VERIFY` | При `1` / `true` включает интеграционную сверку с CoinGecko (`pytest -m integration`, нужен токен FreeCrypto и сеть) |
 | `BITTREND_SIGNAL_CSV_PATH`, `BITTREND_SIGNAL_DEDUPE_SEC` | P1: дублировать историю сигналов из UI в CSV; окно дедупликации повторных расчётов (сек), `0` — писать каждый раз |
 | `BITTREND_LIVE_TRADING`, `BITTREND_LIVE_TRADING_ACK` | P3: live-ордера только при `ACK=YES` ровно; иначе всегда MVP |
 | `BITTREND_CCXT_EXCHANGE`, `BITTREND_CCXT_SYMBOL`, `BITTREND_CCXT_API_KEY`, `BITTREND_CCXT_API_SECRET`, `BITTREND_CCXT_PASSWORD`, `BITTREND_CCXT_TESTNET` | Параметры ccxt (например `binance`, `BTC/USDT`) |
@@ -110,6 +112,13 @@ Confidence: MEDIUM
 ```powershell
 # Запуск всех тестов
 python -m pytest tests/ -v
+
+# Только быстрые unit/integration-локальные (без живых API plan01 §11.2)
+python -m pytest tests/ -v -m "not integration"
+
+# Сверка FreeCrypto vs CoinGecko (сеть + COINGECKO_VERIFY=1 + FREECRYPTO_API_TOKEN)
+$env:COINGECKO_VERIFY = "1"
+python -m pytest tests/ -v -m integration
 
 # С покрытием (если установлен pytest-cov)
 python -m pytest tests/ -v --cov=bit_trend

@@ -1,0 +1,27 @@
+# Пример конфигурации рыночных источников (plan01 §12).
+# Рантайм BitTrend читает те же параметры из переменных окружения — см. .env.example.
+# Этот файл — справочный снимок для документации и ручного копирования в .env.
+
+data_source:
+  primary: freecrypto
+  fallback:
+    - binance
+    - coingecko
+
+freecrypto:
+  api_base: https://api.freecryptoapi.com/v1
+  # api_token задаётся только через FREECRYPTO_API_TOKEN (секрет не хранить в YAML в репозитории)
+
+market_cache:
+  current_ttl_sec: 600 # MARKET_CURRENT_CACHE_TTL_SEC (300–900)
+
+resilience:
+  max_attempts_per_source: 3 # MARKET_SOURCE_MAX_ATTEMPTS
+  retry_base_sec: 0.35 # MARKET_SOURCE_RETRY_BASE_SEC
+  circuit_breaker: false # MARKET_CIRCUIT_BREAKER
+  cb_failure_threshold: 5 # MARKET_CB_FAILURE_THRESHOLD
+  cb_open_sec: 60 # MARKET_CB_OPEN_SEC
+
+verification:
+  # Периодическая сверка primary с CoinGecko (pytest -m integration при COINGECKO_VERIFY=1)
+  coingecko_compare: false # COINGECKO_VERIFY

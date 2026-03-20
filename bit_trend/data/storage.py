@@ -11,6 +11,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
+import pandas as pd
+
 logger = logging.getLogger(__name__)
 
 # Путь к БД (рядом с проектом)
@@ -45,6 +47,17 @@ CREATE TABLE IF NOT EXISTS signal_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_signal_created ON signal_history(created_at);
+
+CREATE TABLE IF NOT EXISTS market_data (
+    timestamp TEXT PRIMARY KEY,
+    symbol TEXT,
+    price REAL,
+    market_cap REAL,
+    volume REAL,
+    source TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_symbol_ts ON market_data(symbol, timestamp);
 """
 
 
@@ -54,11 +67,54 @@ def _get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _migrate_market_data_to_plan01(conn: sqlite3.Connection) -> None:
+    """
+    plan01 §5: один первичный ключ по timestamp. Старые БД с PRIMARY KEY (timestamp, symbol)
+    переносятся с сохранением одной строки на timestamp (по максимальному rowid).
+    """
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_data'"
+    ).fetchone()
+    if not row:
+        return
+    cols = conn.execute("PRAGMA table_info(market_data)").fetchall()
+    pk_names = [r[1] for r in sorted((r for r in cols if r[5] > 0), key=lambda r: r[5])]
+    if pk_names == ["timestamp"]:
+        return
+    if set(pk_names) != {"timestamp", "symbol"}:
+        logger.warning("market_data: неожиданный PK %s, миграция plan01 §5 пропущена", pk_names)
+        return
+    conn.executescript(
+        """
+        BEGIN;
+        CREATE TABLE market_data__plan01 (
+            timestamp TEXT PRIMARY KEY,
+            symbol TEXT,
+            price REAL,
+            market_cap REAL,
+            volume REAL,
+            source TEXT
+        );
+        INSERT INTO market_data__plan01 (timestamp, symbol, price, market_cap, volume, source)
+        SELECT m.timestamp, m.symbol, m.price, m.market_cap, m.volume, m.source
+        FROM market_data m
+        INNER JOIN (
+            SELECT timestamp, MAX(rowid) AS mx FROM market_data GROUP BY timestamp
+        ) u ON m.timestamp = u.timestamp AND m.rowid = u.mx;
+        DROP TABLE market_data;
+        ALTER TABLE market_data__plan01 RENAME TO market_data;
+        CREATE INDEX IF NOT EXISTS idx_market_symbol_ts ON market_data(symbol, timestamp);
+        COMMIT;
+        """
+    )
+
+
 def init_db() -> None:
-    """Создать таблицу при первом запуске."""
+    """Создать таблицы при первом запуске; при необходимости мигрировать market_data (plan01 §5)."""
     conn = _get_conn()
     try:
         conn.executescript(CREATE_TABLE_SQL)
+        _migrate_market_data_to_plan01(conn)
         conn.commit()
     finally:
         conn.close()
@@ -178,6 +234,110 @@ def get_history(limit: int = 1000, source_contains: Optional[str] = None) -> Lis
             }
             for r in rows
         ]
+    finally:
+        conn.close()
+
+
+def _normalize_market_timestamp(ts: Any) -> str:
+    """plan01 §5: в БД всегда ISO 8601 UTC (unix int → fromtimestamp → isoformat)."""
+    if ts is None:
+        return datetime.now(timezone.utc).isoformat()
+    if isinstance(ts, str):
+        return ts
+    try:
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return datetime.now(timezone.utc).isoformat()
+
+
+def save_market_snapshot(row: Dict[str, Any]) -> bool:
+    """
+    Снимок price/cap/volume в market_data (plan01 §5).
+    plan01 §7.2: не писать строку, не прошедшую sanity (кап обязателен, кроме source=binance).
+    """
+    from .market_source import sanity_check_market_row
+
+    strict_cap = str(row.get("source") or "").lower() != "binance"
+    if not sanity_check_market_row(row, require_market_cap=strict_cap):
+        logger.warning("save_market_snapshot: отклонено plan01 §7.2 (price/cap/volume): %s", row)
+        return False
+    price = row.get("price")
+    try:
+        if price is None or float(price) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    symbol = str(row.get("symbol") or "BTC").upper()
+    ts = _normalize_market_timestamp(row.get("timestamp"))
+    cap = row.get("market_cap")
+    vol = row.get("volume")
+    cap_v = float(cap) if cap is not None else None
+    vol_v = float(vol) if vol is not None else None
+    source = str(row.get("source") or "")
+
+    init_db()
+    conn = _get_conn()
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO market_data (timestamp, symbol, price, market_cap, volume, source)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (ts, symbol, float(price), cap_v, vol_v, source),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.warning("save_market_snapshot: %s", e)
+        return False
+    finally:
+        conn.close()
+
+
+def get_last_market_snapshot_time(symbol: str) -> Optional[datetime]:
+    """Максимальный timestamp (UTC) в market_data для символа; для §4 — интервал между снимками."""
+    init_db()
+    conn = _get_conn()
+    try:
+        sym = str(symbol).upper()
+        row = conn.execute(
+            """
+            SELECT MAX(timestamp) AS ts FROM market_data WHERE symbol = ?
+            """,
+            (sym,),
+        ).fetchone()
+        if not row or row["ts"] is None:
+            return None
+        return _parse_iso_utc(str(row["ts"]))
+    finally:
+        conn.close()
+
+
+def load_market_data_history(symbol: str, since_iso: str) -> pd.DataFrame:
+    """Строки market_data с timestamp >= since_iso (ISO), для слияния с API-историей."""
+    init_db()
+    conn = _get_conn()
+    try:
+        sym = str(symbol).upper()
+        rows = conn.execute(
+            """
+            SELECT timestamp, price, market_cap, volume
+            FROM market_data
+            WHERE symbol = ? AND timestamp >= ?
+            ORDER BY timestamp
+            """,
+            (sym, since_iso),
+        ).fetchall()
+        if not rows:
+            return pd.DataFrame(columns=["timestamp", "price", "market_cap", "volume"])
+        return pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime([r["timestamp"] for r in rows], utc=True),
+                "price": [float(r["price"]) for r in rows],
+                "market_cap": [r["market_cap"] for r in rows],
+                "volume": [r["volume"] for r in rows],
+            }
+        )
     finally:
         conn.close()
 

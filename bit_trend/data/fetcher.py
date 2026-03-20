@@ -19,7 +19,7 @@ from .onchain_drift import onchain_drift_payload_for_fetcher
 
 logger = logging.getLogger(__name__)
 
-# Поля plan.md §8.10 (S1) — только из ряда CoinGecko, не перезаписывают MVRV/NUPL/SOPR из LTB/Glassnode
+# Поля plan.md §8.10 (S1) — только из ряда CoinGecko; основные MVRV/NUPL/SOPR в fetch_all идут из get_btc_onchain (по умолчанию тот же proxy)
 def _env_ttl_seconds(name: str, default: int) -> int:
     """Секунды TTL из env; пустая строка и пробелы считаются «не задано» (как в .env.example для CACHE_TTL_FAST)."""
     raw = os.getenv(name)

@@ -61,7 +61,7 @@ BitTrend/
 │   │   ├── __init__.py
 │   │   ├── fetcher.py       # DataFetcher.fetch_all() — единая точка входа
 │   │   ├── binance.py       # Цена, Funding, OI (из derivatives + Binance API)
-│   │   ├── onchain.py       # MVRV Z-Score, NUPL, SOPR (Glassnode + LookIntoBitcoin)
+│   │   ├── onchain.py       # MVRV Z-Score, NUPL, SOPR (по умолчанию CoinGecko proxy; опц. Glassnode, LTB)
 │   │   ├── lookintobitcoin.py # Парсинг MVRV/NUPL/SOPR, stabilize, circuit breaker
 │   │   ├── storage.py      # SQLite onchain_history, save_history, get_history
 │   │   ├── normalize.py    # normalize_mvrv/nupl/sopr → 0–1
@@ -107,7 +107,7 @@ BitTrend/
 
 **API ключи (опционально):**
 - `FRED_API_KEY` — макро
-- `GLASSNODE_API_KEY` — MVRV, NUPL, SOPR (не требуется при fallback через pycoingecko, см. 8.10)
+- `USE_GLASSNODE` + `GLASSNODE_API_KEY` — дозаполнение MVRV, NUPL, SOPR после CoinGecko (по умолчанию Glassnode выключен)
 - `COINGLASS_API_KEY` — ETF flows
 
 **Бесплатные источники:**
@@ -260,6 +260,7 @@ CACHE_TTL=300
 - [x] **Этап 6:** Jupyter notebook для отладки
 - [x] **Этап 7:** LookIntoBitcoin 8.1 + production-grade улучшения (см. 8.9)
 - [x] **Финал:** Интеграция, тестирование, README
+- [x] **Ончейн MVRV/NUPL/SOPR — приоритет CoinGecko (реализация):** по умолчанию расчёт через proxy §8.10 (`bit_trend/data/coingecko_onchain.py`, `market_chart`); Glassnode и парсинг LookIntoBitcoin **не удалены**, но выключены по умолчанию и подключаются только для дозаполнения пропусков: `USE_GLASSNODE=true` + `GLASSNODE_API_KEY`, `USE_LOOKINTOBITCOIN=true` (см. `onchain.py`, `.env.example`, `README.md`, тесты `tests/test_onchain_fallbacks.py`)
 
 ---
 
@@ -420,7 +421,7 @@ CACHE_TTL = 300
 #### Парсинг и fallback
 - **parse_fast()** — requests + pattern extraction (regex, не `"datasets" in text`)
 - **parse_selenium()** — WebDriverWait, headless Chrome, Selenium pool (переиспользование driver)
-- **Цепочка:** Glassnode → parse_fast → parse_selenium → last_known_good
+- **Цепочка в продукте (актуально):** CoinGecko proxy (§8.10) первым → при `USE_GLASSNODE=true` Glassnode дозаполняет пропуски → при `USE_LOOKINTOBITCOIN=true` LTB (parse_fast → parse_selenium → last_known_good) дозаполняет пропуски. Ранее по умолчанию LTB был включён; сейчас `USE_LOOKINTOBITCOIN=false` по умолчанию.
 
 #### Надёжность
 - **stabilize()** — защита от скачков (MVRV 2.1→9.8→2.2), max_delta по метрике
@@ -463,6 +464,8 @@ CACHE_TTL = 300
 ---
 
 ### 8.10 Практический способ получить MVRV, NUPL, SOPR и др. без Glassnode API ✅
+
+**В коде BitTrend:** этот способ задан **основным по умолчанию** для полей `mvrv_z_score` / `nupl` / `sopr` в `get_btc_onchain()` (см. чеклист §7, пункт «приоритет CoinGecko»).
 
 **Контекст:** Все способы получения MVRV, NUPL и SOPR через Glassnode API не подходят. Используем CoinGecko: цены, Market Cap, Volume — и упрощённые модели.
 

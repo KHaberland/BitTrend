@@ -1,10 +1,14 @@
 """
 Он-чейн аналитика Bitcoin: MVRV Z-Score, NUPL, SOPR, Exchange flow.
 
-Источники для MVRV/NUPL/SOPR (по приоритету, дозаполнение пропусков):
-1. Glassnode API — при наличии GLASSNODE_API_KEY
-2. LookIntoBitcoin — парсинг (пригодные confidence/source_score)
-3. CoinGecko — прокси по plan.md §8.10 (`market_chart`, см. coingecko_onchain)
+plan01 §7.1: формулы / пороги MVRV, NUPL, SOPR здесь не меняются при смене провайдера
+price / market_cap / volume для рыночных рядов — меняется лишь источник входных рядов
+при совместимой семантике полей.
+
+Источники для MVRV/NUPL/SOPR (по умолчанию — только CoinGecko proxy; остальное дозаполняет пропуски):
+1. CoinGecko — прокси по plan.md §8.10 (`market_chart`, см. coingecko_onchain), `USE_COINGECKO_ONCHAIN`
+2. Glassnode API — только при `USE_GLASSNODE=true` и `GLASSNODE_API_KEY`
+3. LookIntoBitcoin — только при `USE_LOOKINTOBITCOIN=true` (парсинг)
 
 Дополнительно: Blockchain.com — tx/уникальные адреса (не заменяет метрики выше).
 """
@@ -12,11 +16,24 @@
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any
 
 from .http_client import http_get
+from .lookintobitcoin import USE_LOOKINTOBITCOIN
 
 logger = logging.getLogger(__name__)
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return str(raw).strip().lower() in ("true", "1", "yes")
+
+
+# Включает запросы Glassnode для MVRV/NUPL/SOPR и exchange flow (по умолчанию выключено).
+USE_GLASSNODE = _env_truthy("USE_GLASSNODE", False)
 
 BLOCKCHAIN_STATS = "https://api.blockchain.info/stats"
 BLOCKCHAIN_CHARTS = "https://api.blockchain.info/charts"
@@ -56,7 +73,9 @@ def _get_glassnode_metric(
     interval: str = "24h",
     days: int = 30
 ) -> Optional[Any]:
-    """Запрос метрики Glassnode. Требует GLASSNODE_API_KEY."""
+    """Запрос метрики Glassnode при USE_GLASSNODE=true и GLASSNODE_API_KEY."""
+    if not USE_GLASSNODE:
+        return None
     api_key = os.environ.get("GLASSNODE_API_KEY")
     if not api_key:
         return None
@@ -182,25 +201,62 @@ def get_btc_onchain() -> Optional[Dict]:
     if addr_data:
         result["active_addresses"] = int(addr_data[-1]["y"]) if addr_data else 0
 
+    # 1) Основной путь по умолчанию — CoinGecko proxy (plan §8.10)
+    if result["mvrv_z_score"] is None or result["nupl"] is None or result["sopr"] is None:
+        try:
+            from .coingecko_onchain import get_coingecko_onchain_proxy
+
+            cg = get_coingecko_onchain_proxy()
+            if cg:
+                filled = False
+                if result["mvrv_z_score"] is None and cg.get("mvrv_z_score") is not None:
+                    result["mvrv_z_score"] = cg["mvrv_z_score"]
+                    filled = True
+                if result["nupl"] is None and cg.get("nupl") is not None:
+                    result["nupl"] = cg["nupl"]
+                    filled = True
+                if result["sopr"] is None and cg.get("sopr") is not None:
+                    val = cg["sopr"]
+                    result["sopr"] = val
+                    result["sopr_signal"] = 1 if val < 1.0 else (-1 if val > 1.05 else 0)
+                    filled = True
+                if filled:
+                    _apply_onchain_quality(
+                        result,
+                        str(cg.get("source", "coingecko")),
+                        float(cg.get("confidence", 0)),
+                        float(cg.get("source_score", 0)),
+                        str(cg.get("method", "")),
+                    )
+        except Exception as e:
+            logger.debug(f"CoinGecko onchain (primary): {e}")
+
+    # 2) Glassnode — опционально (`USE_GLASSNODE=true`), только дозаполнение пропусков
     api_key = os.environ.get("GLASSNODE_API_KEY")
-    if api_key:
+    if USE_GLASSNODE and api_key:
+        gn_filled_triplet = False
         mvrv_z = _get_glassnode_metric("market/mvrv_z_score", days=7)
-        if mvrv_z is not None:
+        if mvrv_z is not None and result["mvrv_z_score"] is None:
             result["mvrv_z_score"] = float(mvrv_z) if not isinstance(mvrv_z, dict) else float(mvrv_z.get("v", 0))
+            gn_filled_triplet = True
 
         nupl = _get_glassnode_metric("indicators/nupl", days=7)
-        if nupl is not None:
+        if nupl is not None and result["nupl"] is None:
             result["nupl"] = float(nupl) if not isinstance(nupl, dict) else float(nupl.get("v", 0))
-
-        mvrv = _get_glassnode_metric("market/mvrv", days=7)
-        if mvrv is not None:
-            result["mvrv"] = float(mvrv) if not isinstance(mvrv, dict) else float(mvrv.get("v", 0))
+            gn_filled_triplet = True
 
         sopr = _get_glassnode_metric("indicators/sopr", days=7)
-        if sopr is not None:
+        if sopr is not None and result["sopr"] is None:
             val = float(sopr) if not isinstance(sopr, dict) else float(sopr.get("v", 1.0))
             result["sopr"] = val
             result["sopr_signal"] = 1 if val < 1.0 else (-1 if val > 1.05 else 0)
+            gn_filled_triplet = True
+
+        gn_used = gn_filled_triplet
+        mvrv = _get_glassnode_metric("market/mvrv", days=7)
+        if mvrv is not None and result["mvrv"] is None:
+            result["mvrv"] = float(mvrv) if not isinstance(mvrv, dict) else float(mvrv.get("v", 0))
+            gn_used = True
 
         inflow = _get_glassnode_metric("transactions/transfers_volume_to_exchanges_sum", days=7)
         outflow = _get_glassnode_metric("transactions/transfers_volume_from_exchanges_sum", days=7)
@@ -213,21 +269,21 @@ def get_btc_onchain() -> Optional[Dict]:
                 result["exchange_flow_signal"] = 1
             elif in_val > out_val * 1.1:
                 result["exchange_flow_signal"] = -1
+            gn_used = True
 
-        if (
-            result["mvrv_z_score"] is not None
-            or result["nupl"] is not None
-            or result["sopr"] is not None
-        ):
+        if gn_used:
             _apply_onchain_quality(result, "glassnode", 0.95, 0.9, "api")
 
-    # Fallback: LookIntoBitcoin — parse_fast → parse_selenium
-    if result["mvrv_z_score"] is None or result["nupl"] is None or result["sopr"] is None:
+    # 3) LookIntoBitcoin — опционально (`USE_LOOKINTOBITCOIN=true`), только дозаполнение
+    if USE_LOOKINTOBITCOIN and (
+        result["mvrv_z_score"] is None or result["nupl"] is None or result["sopr"] is None
+    ):
         try:
             from .lookintobitcoin import get_lookintobitcoin_metrics
+
             lib_data = get_lookintobitcoin_metrics()
             if lib_data.get("source") == "failed":
-                logger.error("CRITICAL: Onchain data unavailable — система работает вслепую")
+                logger.error("CRITICAL: LookIntoBitcoin failed — MVRV/NUPL/SOPR могут остаться без датчика")
             elif lib_data.get("source_score", 0) >= 0.4:
                 confidence = lib_data.get("confidence", 0)
                 if confidence >= 0.5:
@@ -254,34 +310,24 @@ def get_btc_onchain() -> Optional[Dict]:
         except Exception as e:
             logger.debug(f"LookIntoBitcoin fallback: {e}")
 
-    # Третий fallback: CoinGecko proxy (plan §8.10)
-    if result["mvrv_z_score"] is None or result["nupl"] is None or result["sopr"] is None:
-        try:
-            from .coingecko_onchain import get_coingecko_onchain_proxy
-            cg = get_coingecko_onchain_proxy()
-            if cg:
-                filled = False
-                if result["mvrv_z_score"] is None and cg.get("mvrv_z_score") is not None:
-                    result["mvrv_z_score"] = cg["mvrv_z_score"]
-                    filled = True
-                if result["nupl"] is None and cg.get("nupl") is not None:
-                    result["nupl"] = cg["nupl"]
-                    filled = True
-                if result["sopr"] is None and cg.get("sopr") is not None:
-                    val = cg["sopr"]
-                    result["sopr"] = val
-                    result["sopr_signal"] = 1 if val < 1.0 else (-1 if val > 1.05 else 0)
-                    filled = True
-                if filled:
-                    _apply_onchain_quality(
-                        result,
-                        str(cg.get("source", "coingecko")),
-                        float(cg.get("confidence", 0)),
-                        float(cg.get("source_score", 0)),
-                        str(cg.get("method", "")),
-                    )
-        except Exception as e:
-            logger.debug(f"CoinGecko onchain fallback: {e}")
-
     result["interpretation"] = _interpret_onchain(result)
+
+    # История SQLite: раньше писалась только из LookIntoBitcoin — при основном пути CoinGecko/Glassnode строк не было.
+    if any(result.get(k) is not None for k in ("mvrv_z_score", "nupl", "sopr")):
+        try:
+            from .storage import save_history
+
+            save_history(
+                {
+                    "mvrv_z_score": result["mvrv_z_score"],
+                    "nupl": result["nupl"],
+                    "sopr": result["sopr"],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "source": str(result.get("onchain_source") or ""),
+                    "confidence": float(result.get("onchain_confidence") or 0),
+                }
+            )
+        except Exception as e:
+            logger.debug("onchain save_history: %s", e)
+
     return result

@@ -1,6 +1,7 @@
 """
 Proxy MVRV / NUPL / SOPR по plan.md §8.10 — CoinGecko (price, market_cap, volume).
-Третий fallback после Glassnode и LookIntoBitcoin; volatility, drawdown, rolling z, composite_onchain (S1).
+Основной путь для MVRV/NUPL/SOPR по умолчанию; volatility, drawdown, rolling z, composite_onchain (S1).
+Glassnode / LookIntoBitcoin в `onchain.py` подключаются опционально и дозаполняют пропуски.
 """
 
 from __future__ import annotations
@@ -74,7 +75,15 @@ def _fetch_market_chart_payload() -> Optional[dict]:
             timeout=REQUEST_TIMEOUT,
         )
         if not r.ok:
-            logger.warning("CoinGecko market_chart: HTTP %s", r.status_code)
+            if r.status_code == 401:
+                logger.warning(
+                    "CoinGecko market_chart: HTTP 401 — без ключа API метод недоступен; "
+                    "задайте COINGECKO_DEMO_API_KEY или COINGECKO_PRO_API_KEY "
+                    "(см. https://www.coingecko.com/en/api ). "
+                    "Иначе MVRV/NUPL/SOPR останутся пустыми, если не включены Glassnode/LookIntoBitcoin."
+                )
+            else:
+                logger.warning("CoinGecko market_chart: HTTP %s", r.status_code)
             return None
         return r.json()
     except Exception as e:
