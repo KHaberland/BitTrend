@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
 from .binance import get_btc_price, get_btc_derivatives, get_ma200
+from .market_source import get_market_current_with_fallback
 from .fear_greed import get_fear_greed_index
 from .macro import get_macro_data
 from .onchain import get_btc_onchain
@@ -18,6 +19,37 @@ from .coingecko_onchain import get_coingecko_810_bundle, clear_coingecko_bundle_
 from .onchain_drift import onchain_drift_payload_for_fetcher
 
 logger = logging.getLogger(__name__)
+
+
+def _btc_quote_for_fetcher_fast() -> Dict[str, Any]:
+    """
+    plan01 §15: spot-цена и при наличии кап/объём — через цепочку MarketDataSource.
+    Если все провайдеры вернули None/битую цену — тикер Binance futures (как раньше), без исключения наружу.
+    """
+    row = get_market_current_with_fallback("BTC")
+    if row:
+        try:
+            p = float(row.get("price") or 0)
+            if p > 0:
+                return {
+                    "btc_price": p,
+                    "btc_market_cap": row.get("market_cap"),
+                    "btc_24h_volume": row.get("volume"),
+                    "btc_quote_source": row.get("source"),
+                }
+        except (TypeError, ValueError):
+            pass
+    try:
+        legacy = float(get_btc_price() or 0)
+    except (TypeError, ValueError):
+        legacy = 0.0
+    return {
+        "btc_price": legacy,
+        "btc_market_cap": None,
+        "btc_24h_volume": None,
+        "btc_quote_source": "binance_futures_ticker",
+    }
+
 
 # Поля plan.md §8.10 (S1) — только из ряда CoinGecko; основные MVRV/NUPL/SOPR в fetch_all идут из get_btc_onchain (по умолчанию тот же proxy)
 def _env_ttl_seconds(name: str, default: int) -> int:
@@ -117,6 +149,9 @@ class DataFetcher:
             return merged
 
         btc_price = 0.0
+        btc_market_cap: Optional[float] = None
+        btc_24h_volume: Optional[float] = None
+        btc_quote_source: Optional[str] = None
         ma200 = None
         derivatives: Dict = {}
         fear_greed: Dict = {}
@@ -126,7 +161,7 @@ class DataFetcher:
 
         if need_fast:
             with ThreadPoolExecutor(max_workers=4) as executor:
-                f_price = executor.submit(get_btc_price)
+                f_price = executor.submit(_btc_quote_for_fetcher_fast)
                 f_ma = executor.submit(get_ma200)
                 f_deriv = executor.submit(lambda: get_btc_derivatives() or {})
                 f_fg = executor.submit(lambda: get_fear_greed_index() or {})
@@ -139,7 +174,11 @@ class DataFetcher:
                     try:
                         val = fut.result()
                         if key == "price":
-                            btc_price = val or 0.0
+                            q = val or {}
+                            btc_price = float(q.get("btc_price") or 0)
+                            btc_market_cap = q.get("btc_market_cap")
+                            btc_24h_volume = q.get("btc_24h_volume")
+                            btc_quote_source = q.get("btc_quote_source")
                         elif key == "ma200":
                             ma200 = val
                         elif key == "deriv":
@@ -151,6 +190,9 @@ class DataFetcher:
             now_f = datetime.now()
             _shared_fast_cache = {
                 "btc_price": btc_price,
+                "btc_market_cap": btc_market_cap,
+                "btc_24h_volume": btc_24h_volume,
+                "btc_quote_source": btc_quote_source,
                 "ma200": ma200,
                 "funding_rate": derivatives.get("funding_rate"),
                 "funding_rate_8h_avg": derivatives.get("funding_rate_8h_avg"),
@@ -162,6 +204,9 @@ class DataFetcher:
             _shared_fast_time = now_f
         else:
             btc_price = _shared_fast_cache["btc_price"]
+            btc_market_cap = _shared_fast_cache.get("btc_market_cap")
+            btc_24h_volume = _shared_fast_cache.get("btc_24h_volume")
+            btc_quote_source = _shared_fast_cache.get("btc_quote_source")
             ma200 = _shared_fast_cache["ma200"]
             derivatives = {
                 "funding_rate": _shared_fast_cache.get("funding_rate"),
@@ -251,6 +296,9 @@ class DataFetcher:
 
         result: Dict[str, Any] = {
             "btc_price": btc_price,
+            "btc_market_cap": btc_market_cap,
+            "btc_24h_volume": btc_24h_volume,
+            "btc_quote_source": btc_quote_source,
             "ma200": ma200,
             "funding_rate": derivatives.get("funding_rate"),
             "funding_rate_8h_avg": derivatives.get("funding_rate_8h_avg"),

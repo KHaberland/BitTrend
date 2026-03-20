@@ -9,7 +9,25 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from bit_trend.data import fetcher as fetcher_module
-from bit_trend.data.fetcher import DataFetcher
+from bit_trend.data.fetcher import DataFetcher, _btc_quote_for_fetcher_fast
+
+
+@patch("bit_trend.data.fetcher.get_btc_price")
+@patch("bit_trend.data.fetcher.get_market_current_with_fallback")
+def test_btc_quote_prefers_market_source_chain(mock_market, mock_binance_price):
+    """plan01 §15: быстрый путь UI — цена через MarketDataSource, binance ticker только если цепочка пуста."""
+    mock_market.return_value = {
+        "price": 77777.0,
+        "market_cap": 1e12,
+        "volume": 1e10,
+        "source": "freecrypto",
+    }
+    q = _btc_quote_for_fetcher_fast()
+    assert q["btc_price"] == 77777.0
+    assert q["btc_market_cap"] == 1e12
+    assert q["btc_24h_volume"] == 1e10
+    assert q["btc_quote_source"] == "freecrypto"
+    mock_binance_price.assert_not_called()
 
 
 def _mock_fetch_all_sources():
@@ -81,6 +99,7 @@ def _split_fast_slow(m: dict) -> tuple:
     return fast_internal, slow_internal
 
 
+@patch("bit_trend.data.fetcher.get_market_current_with_fallback", return_value=None)
 @patch("bit_trend.data.fetcher.get_btc_price", return_value=70800.0)
 @patch("bit_trend.data.fetcher.get_ma200", return_value=65000.0)
 @patch("bit_trend.data.fetcher.get_btc_derivatives")
@@ -98,6 +117,7 @@ def test_fetch_all_structure(
     mock_deriv,
     mock_ma200,
     mock_price,
+    mock_market_current,
 ):
     """fetch_all() возвращает словарь с ожидаемыми ключами."""
     mock_deriv.return_value = {"funding_rate": 0.00005, "open_interest_7d_change_pct": 5}
@@ -165,7 +185,9 @@ def test_empty_cache_ttl_fast_falls_back_to_constructor():
 @patch("bit_trend.data.fetcher.get_btc_derivatives")
 @patch("bit_trend.data.fetcher.get_ma200")
 @patch("bit_trend.data.fetcher.get_btc_price")
+@patch("bit_trend.data.fetcher.get_market_current_with_fallback", return_value=None)
 def test_only_fast_sources_when_slow_cache_still_valid(
+    mock_market_current,
     mock_price,
     mock_ma,
     mock_deriv,
@@ -207,7 +229,9 @@ def test_only_fast_sources_when_slow_cache_still_valid(
 @patch("bit_trend.data.fetcher.get_btc_derivatives")
 @patch("bit_trend.data.fetcher.get_ma200")
 @patch("bit_trend.data.fetcher.get_btc_price")
+@patch("bit_trend.data.fetcher.get_market_current_with_fallback")
 def test_only_slow_sources_when_fast_cache_still_valid(
+    mock_market_current,
     mock_price,
     mock_ma,
     mock_deriv,
@@ -233,6 +257,7 @@ def test_only_slow_sources_when_fast_cache_still_valid(
 
     fetcher.fetch_all(use_cache=True)
 
+    mock_market_current.assert_not_called()
     mock_price.assert_not_called()
     mock_ma.assert_not_called()
     mock_deriv.assert_not_called()

@@ -246,31 +246,43 @@ data_source:
 
 ## 13. Риски и меры
 
-| Риск | Мера |
-|------|------|
-| Нестабильность FreeCryptoAPI | fallback, retry, мониторинг статус-кодов |
-| Нет глубокой истории | локальная БД + `collect_daily_snapshot` |
-| Неизвестная методология агрегации | периодическая сверка с CoinGecko; логирование `source` |
+| Риск | Мера | Реализация / контроль |
+|------|------|----------------------|
+| Нестабильность FreeCryptoAPI (5xx, таймауты, сеть) | Цепочка источников primary→fallback; повторы с backoff; опциональный circuit breaker | `get_market_current_with_fallback`, `MARKET_DATA_PRIMARY` / `MARKET_DATA_FALLBACK`, `MARKET_SOURCE_MAX_ATTEMPTS`, `MARKET_SOURCE_RETRY_BASE_SEC`, `MARKET_CIRCUIT_BREAKER` — `bit_trend/data/market_source.py`; транзиентные HTTP — `http_client.py` |
+| Отсутствие или смена контракта JSON у провайдера | Нормализация полей, sanity-check перед записью; не писать битые строки | `normalize_freecrypto_dict`, `_history_json_to_df` — `freecrypto.py`; `sanity_check_market_row`, `save_market_snapshot` — `market_source.py`, `storage.py` |
+| Нет глубокой истории (как у CoinGecko) | Гибрид §4.1: история с API + локальные снимки в SQLite | `build_market_history` + `collect_daily_snapshot` — `market_source.py`; таблица и миграция — `storage.py` (`_migrate_market_data_to_plan01`) |
+| Расхождение цен/кап/объёма с эталоном | Периодическая сверка; допуск; опциональная проверка в CI | `tests/test_market_plan01_integration.py` + `COINGECKO_VERIFY=1`; порог ~3 % по цене |
+| Утечка или отсутствие API-токена | Документированные env; явный fallback при отсутствии токена | `.env.example`, `FREECRYPTO_API_TOKEN`; тест fallback без токена — `test_market_sources.py` |
+| Устаревание кэша в UI / двойные снимки | TTL в допустимых пределах; снимки без кэша текущей котировки | `MARKET_CURRENT_CACHE_TTL_SEC` (300–900 с); `collect_daily_snapshot(..., use_cache=False)` |
+| Непрозрачная методология агрегации у внешнего API | Логировать `source`; при спорных метриках опираться на сверку и историю в БД | колонка `source` в `market_data`; цепочка fallback пишет различимый `source` |
 
 ---
 
 ## 14. Этапы внедрения
 
-### Этап 1
+**Статус:** этапы 1–3 по plan01 выполнены в кодовой базе; дальнейшее — эксплуатация (мониторинг, расписание снимков, при необходимости смена env в production).
 
-- Реализовать `FreeCryptoDataSource`.
-- Протестировать `get_current` (unit + ручной smoke).
+### Этап 1 — источник FreeCryptoAPI
 
-### Этап 2
+- [x] Реализован `FreeCryptoDataSource` (`get_current`, `get_history`, маппинг полей) — `bit_trend/data/freecrypto.py`.
+- [x] Unit-покрытие парсинга и нормализации — `tests/test_market_sources.py`.
+- [x] Ручной smoke: запрос к API при наличии `FREECRYPTO_API_TOKEN`.
 
-- Внедрить в pipeline за абстракцией `MarketDataSource`.
-- Сравнить ряды с CoinGecko (integration, допуск 2–3%).
-- Включить таблицу `market_data` и при необходимости сбор снимков (вариант B).
+### Этап 2 — интеграция в pipeline
 
-### Этап 3
+- [x] Все вызовы price/cap/volume идут через `MarketDataSource` и фабрику цепочки — `bit_trend/data/market_source.py`.
+- [x] Сверка с CoinGecko при включённом флаге — `tests/test_market_plan01_integration.py`, маркер `integration` в `pytest.ini`.
+- [x] Таблица `market_data`, миграция ключа, гибрид истории и `collect_daily_snapshot` — `bit_trend/data/storage.py`, `market_source.py`.
 
-- Отключить CoinGecko как primary для рыночных рядов (оставить опционально для сверки).
-- Включить production fallback chain и финальные TTL.
+### Этап 3 — production-режим
+
+- [x] По умолчанию primary — `freecrypto` (`MARKET_DATA_PRIMARY`), CoinGecko в цепочке как fallback/сверка, не как обязательный primary — см. значения по умолчанию в `market_source.py` и `.env.example`.
+- [x] Fallback chain и TTL кэша текущих котировок настраиваются env (§10, §12).
+
+**Рекомендуемые пост-внедренческие действия (вне кода):**
+
+- Задать расписание вызова `collect_daily_snapshot` (Планировщик заданий Windows / cron на сервере) — не реже 1 раза в сутки для варианта B.
+- Включить периодический прогон integration-тестов или мониторинг отклонений, если критична близость к CoinGecko.
 
 ---
 
@@ -280,6 +292,15 @@ data_source:
 - Данные пишутся в `market_data` с корректным маппингом и `source`.
 - При падении primary срабатывает fallback без необработанного исключения в UI.
 - Тесты из §11 проходят в CI.
+
+**Статус проверки (код):**
+
+| Критерий | Реализация |
+|----------|------------|
+| Цепочка `MarketDataSource` для price/cap/volume | `get_market_current_with_fallback`, `build_market_history`, `collect_daily_snapshot`; **UI:** быстрый блок `DataFetcher.fetch_all` берёт котировку через `get_market_current_with_fallback`, при полном провале цепочки — тикер Binance (`_btc_quote_for_fetcher_fast` в `bit_trend/data/fetcher.py`). В ответ добавлены `btc_market_cap`, `btc_24h_volume`, `btc_quote_source`. Прокси §8.10 (`coingecko_onchain`) — отдельный контур по plan.md. |
+| `market_data` + `source` | `save_market_snapshot` / миграции — `storage.py`. |
+| Fallback без необработанных исключений в UI | Цепочка и запасной тикер обёрнуты в try/except в `fetch_all`; `get_market_current_with_fallback` логирует и возвращает `None`. |
+| Тесты §11 | `tests/test_market_sources.py`; integration — `tests/test_market_plan01_integration.py` (маркер `integration`, опционально `COINGECKO_VERIFY=1`). Команда: `python -m pytest tests/test_market_sources.py -q`. |
 
 ---
 
