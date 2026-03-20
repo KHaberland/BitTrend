@@ -211,6 +211,24 @@ def main():
     o_conf = metrics_data.get("onchain_confidence")
     o_ss = metrics_data.get("onchain_source_score")
     o_meth = metrics_data.get("onchain_method")
+    def _cg810_zone(z) -> str:
+        """Дискретная зона по plan.md §8.10 (пороги по z-композиту, ориентир)."""
+        if z is None:
+            return "—"
+        try:
+            x = float(z)
+        except (TypeError, ValueError):
+            return "—"
+        if x < -1.5:
+            return "STRONG BUY (proxy)"
+        if x < -0.5:
+            return "BUY (proxy)"
+        if x < 0.5:
+            return "HOLD (proxy)"
+        if x < 1.5:
+            return "REDUCE (proxy)"
+        return "STRONG REDUCE / риск (proxy)"
+
     with st.expander("🔎 Качество ончейн-данных (источник и уверенность)"):
         if not o_src or o_src == "none":
             st.warning(
@@ -226,6 +244,42 @@ def main():
             )
             if o_ss is not None and float(o_ss) < 0.5:
                 st.caption("Низкий source_score — трактуйте MVRV/NUPL/SOPR осторожно (прокси или ухудшенный парсинг).")
+
+    cg_c = metrics_data.get("cg_composite_onchain")
+    if cg_c is not None or metrics_data.get("cg_volatility_30d") is not None:
+        w810 = float(os.environ.get("SCORER_WEIGHT_COMPOSITE_810", "0") or 0)
+        with st.expander("📈 §8.10 ончейн-composite (CoinGecko proxy, S1)"):
+            st.caption(
+                "Отдельный ряд по plan.md §8.10: rolling z по прокси MVRV/NUPL/SOPR, волатильность 30d, drawdown; "
+                "composite не дублирует веса MVRV/NUPL/SOPR в основном score, если не включён SCORER_WEIGHT_COMPOSITE_810."
+            )
+            st.metric("cg_composite_onchain (z)", f"{cg_c:.3f}" if cg_c is not None else "—", help="Взвешенная сумма z; низкие значения часто ближе к зоне накопления в примерах плана.")
+            st.caption(f"Зона (ориентир): **{_cg810_zone(cg_c)}**")
+            c810_comp = components.get("composite_810")
+            if c810_comp is not None:
+                st.caption(f"Вклад в шкалу -100…+100 (для смешивания): **{c810_comp:+.1f}**; вес в score: **{w810:g}**")
+            zcols = st.columns(2)
+            with zcols[0]:
+                st.markdown(
+                    f"| z | значение |\n|---|----------|\n"
+                    f"| cg_mvrv_z | `{metrics_data.get('cg_mvrv_z')}` |\n"
+                    f"| cg_nupl_z | `{metrics_data.get('cg_nupl_z')}` |\n"
+                    f"| cg_sopr_z | `{metrics_data.get('cg_sopr_z')}` |\n"
+                )
+            with zcols[1]:
+                st.markdown(
+                    f"| z / сырьё | значение |\n|-----------|----------|\n"
+                    f"| cg_volatility_z | `{metrics_data.get('cg_volatility_z')}` |\n"
+                    f"| cg_drawdown_z | `{metrics_data.get('cg_drawdown_z')}` |\n"
+                    f"| cg_volatility_30d | `{metrics_data.get('cg_volatility_30d')}` |\n"
+                    f"| cg_drawdown | `{metrics_data.get('cg_drawdown')}` |\n"
+                )
+            ts810 = metrics_data.get("cg_proxy_updated_at")
+            if ts810:
+                st.caption(f"Обновление ряда CoinGecko: `{ts810}`")
+            st.caption(
+                "Веса composite: переменные COMPOSITE_810_W_MVRV, …_NUPL, …_SOPR, …_DRAWDOWN, …_VOLATILITY (.env)."
+            )
 
     cpi_y = metrics_data.get("cpi_yoy_pct")
     sp_raw = metrics_data.get("sp500")

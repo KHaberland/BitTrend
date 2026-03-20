@@ -2,7 +2,8 @@
 BitTrendScorer — расчёт score (-100..+100) и сигнала BUY/HOLD/REDUCE/EXIT.
 Метрики и веса по plan.md.
 """
-
+import math
+import os
 from typing import Dict, Any, Optional, Tuple
 
 # Веса метрик (%)
@@ -14,6 +15,26 @@ WEIGHT_DERIVATIVES = 0.15
 WEIGHT_ETF = 0.15
 WEIGHT_MACRO = 0.10
 WEIGHT_FEAR_GREED = 0.05
+
+# Опционально: вклад composite_onchain (z) из §8.10 — по умолчанию 0 (только UI), см. upgrade_plan S1
+WEIGHT_COMPOSITE_810 = float(os.environ.get("SCORER_WEIGHT_COMPOSITE_810", "0"))
+_COMPOSITE_810_SCALE = float(os.environ.get("SCORER_COMPOSITE_810_SCALE", "40"))
+
+
+def _composite_810_to_component(z: Optional[float]) -> float:
+    """
+    Согласование со шкалой скорера: по plan.md §8.10 низкий/отрицательный composite → зона BUY.
+    Переводим в вклад -100..+100 (положительный = благоприятно для накопления BTC).
+    """
+    if z is None:
+        return 0.0
+    try:
+        zf = float(z)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(zf):
+        return 0.0
+    return max(-100.0, min(100.0, -zf * _COMPOSITE_810_SCALE))
 
 
 def _metric_to_score(value: Optional[float], low_good: float, high_bad: float) -> float:
@@ -153,6 +174,8 @@ class BitTrendScorer:
         c_macro = _macro_to_component(data.get("macro_signal", 0))
         c_fg = _fear_greed_to_component(data.get("fear_greed_value"))
 
+        c_comp810 = _composite_810_to_component(data.get("cg_composite_onchain"))
+
         components = {
             "mvrv_z_score": c_mvrv,
             "nupl": c_nupl,
@@ -162,6 +185,7 @@ class BitTrendScorer:
             "etf": c_etf,
             "macro": c_macro,
             "fear_greed": c_fg,
+            "composite_810": c_comp810,
         }
 
         score = (
@@ -174,6 +198,8 @@ class BitTrendScorer:
             + c_macro * WEIGHT_MACRO
             + c_fg * WEIGHT_FEAR_GREED
         )
+        if WEIGHT_COMPOSITE_810 > 0:
+            score += c_comp810 * WEIGHT_COMPOSITE_810
 
         score = max(-100.0, min(100.0, score))
         signal = self._score_to_signal(score)

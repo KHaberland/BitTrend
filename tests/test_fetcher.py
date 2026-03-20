@@ -87,7 +87,9 @@ def _split_fast_slow(m: dict) -> tuple:
 @patch("bit_trend.data.fetcher.get_macro_data")
 @patch("bit_trend.data.fetcher.get_btc_onchain")
 @patch("bit_trend.data.fetcher.get_etf_flows")
+@patch("bit_trend.data.fetcher.get_coingecko_810_bundle", return_value=None)
 def test_fetch_all_structure(
+    mock_cg810,
     mock_etf,
     mock_onchain,
     mock_macro,

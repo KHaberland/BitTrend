@@ -14,8 +14,32 @@ from .fear_greed import get_fear_greed_index
 from .macro import get_macro_data
 from .onchain import get_btc_onchain
 from .etf import get_etf_flows
+from .coingecko_onchain import get_coingecko_810_bundle, clear_coingecko_bundle_cache
 
 logger = logging.getLogger(__name__)
+
+# Поля plan.md §8.10 (S1) — только из ряда CoinGecko, не перезаписывают MVRV/NUPL/SOPR из LTB/Glassnode
+_CG810_RESULT_KEYS = (
+    "cg_composite_onchain",
+    "cg_mvrv_z",
+    "cg_nupl_z",
+    "cg_sopr_z",
+    "cg_volatility_30d",
+    "cg_drawdown",
+    "cg_volatility_z",
+    "cg_drawdown_z",
+    "cg_proxy_updated_at",
+)
+
+
+def _cg810_slice() -> Dict[str, Any]:
+    """Подмножество §8.10 для результата fetch_all (один вызов CoinGecko с кэшем)."""
+    bundle = get_coingecko_810_bundle()
+    if not bundle:
+        return {k: None for k in _CG810_RESULT_KEYS}
+    out: Dict[str, Any] = {k: bundle.get(k) for k in _CG810_RESULT_KEYS if k != "cg_proxy_updated_at"}
+    out["cg_proxy_updated_at"] = bundle.get("timestamp")
+    return out
 
 _shared_fast_cache: Optional[Dict[str, Any]] = None
 _shared_fast_time: Optional[datetime] = None
@@ -158,6 +182,7 @@ class DataFetcher:
                 "etf_flow_7d_usd": etf.get("flow_7d_usd"),
                 "etf_flow_1d_usd": etf.get("flow_1d_usd"),
                 "etf_interpretation": etf.get("interpretation"),
+                **_cg810_slice(),
             }
             _shared_slow_time = now_s
         else:
@@ -190,6 +215,8 @@ class DataFetcher:
                 "interpretation": _shared_slow_cache.get("etf_interpretation"),
             }
 
+        cg810 = {k: _shared_slow_cache.get(k) for k in _CG810_RESULT_KEYS} if _shared_slow_cache else {k: None for k in _CG810_RESULT_KEYS}
+
         result: Dict[str, Any] = {
             "btc_price": btc_price,
             "ma200": ma200,
@@ -220,6 +247,7 @@ class DataFetcher:
             "etf_flow_7d_usd": etf.get("flow_7d_usd"),
             "etf_flow_1d_usd": etf.get("flow_1d_usd"),
             "etf_interpretation": etf.get("interpretation"),
+            **cg810,
         }
 
         return result
@@ -231,3 +259,4 @@ class DataFetcher:
         _shared_fast_time = None
         _shared_slow_cache = None
         _shared_slow_time = None
+        clear_coingecko_bundle_cache()
