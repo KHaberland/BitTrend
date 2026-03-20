@@ -1,6 +1,10 @@
 """
-Proxy MVRV / NUPL / SOPR по plan.md §8.10 — CoinGecko (price, market_cap, volume).
-Основной путь для MVRV/NUPL/SOPR по умолчанию; volatility, drawdown, rolling z, composite_onchain (S1).
+Proxy MVRV / NUPL / SOPR по plan.md §8.10 — ряды price / market_cap / volume.
+
+Источник рядов для расчёта: plan01 — :func:`build_market_history` (FreeCryptoAPI + SQLite),
+а не прямой запрос CoinGecko ``market_chart``. Отдельно ``_fetch_market_chart_payload``
+остаётся для legacy :class:`CoinGeckoMarketDataSource.get_history`.
+
 Glassnode / LookIntoBitcoin в `onchain.py` подключаются опционально и дозаполняют пропуски.
 """
 
@@ -17,6 +21,7 @@ import pandas as pd
 from bit_trend.config.loader import get_scoring_config
 
 from .http_client import http_get
+from .market_source import build_market_history
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +29,9 @@ COINGECKO_CHART_URL = "https://api.coingecko.com/api/v3/coins/bitcoin/market_cha
 REQUEST_TIMEOUT = 25
 
 USE_COINGECKO_ONCHAIN = os.environ.get("USE_COINGECKO_ONCHAIN", "true").lower() in ("true", "1", "yes")
+
+# Минимум строк (дней при дневных снимках) для rolling-окон §8.10; совпадает с прежним порогом CoinGecko.
+_MIN_PROXY_ROWS_DEFAULT = 400
 
 # Прокси-модель — ниже, чем у LTB/Glassnode; conservative meta для UI
 PROXY_CONFIDENCE = float(os.environ.get("COINGECKO_ONCHAIN_CONFIDENCE", "0.55"))
@@ -33,6 +41,52 @@ _bundle_time: Optional[datetime] = None
 _bundle_payload: Optional[Dict[str, Any]] = None
 _bundle_df: Optional[pd.DataFrame] = None
 _BUNDLE_TTL = timedelta(seconds=int(os.environ.get("COINGECKO_BUNDLE_CACHE_SEC", "120")))
+
+
+def _env_onchain_proxy_history_days() -> int:
+    """Глубина окна для build_market_history (по умолчанию макс. как у FreeCrypto getHistory)."""
+    raw = os.environ.get("ONCHAIN_PROXY_HISTORY_DAYS", "3650").strip() or "3650"
+    try:
+        d = int(raw)
+    except ValueError:
+        d = 3650
+    return max(_MIN_PROXY_ROWS_DEFAULT, min(3650, d))
+
+
+def _env_onchain_proxy_min_rows() -> int:
+    raw = os.environ.get("ONCHAIN_PROXY_MIN_ROWS", str(_MIN_PROXY_ROWS_DEFAULT)).strip() or str(
+        _MIN_PROXY_ROWS_DEFAULT
+    )
+    try:
+        n = int(raw)
+    except ValueError:
+        n = _MIN_PROXY_ROWS_DEFAULT
+    return max(200, min(2000, n))
+
+
+def _dataframe_from_market_history(hist: pd.DataFrame) -> Optional[pd.DataFrame]:
+    """
+    Нормализованный ряд market_source → индекс UTC-время, колонки для :func:`_enrich_810`.
+    """
+    if hist is None or hist.empty:
+        return None
+    min_rows = _env_onchain_proxy_min_rows()
+    df = hist.copy()
+    df = df.dropna(subset=["timestamp", "price", "market_cap"])
+    if len(df) < min_rows:
+        logger.warning(
+            "История для proxy §8.10: мало строк (%d < %d). "
+            "Нужны FREECRYPTO_API_TOKEN / getHistory и/или снимки market_data (plan01 §4.1).",
+            len(df),
+            min_rows,
+        )
+        return None
+    df = df.sort_values("timestamp")
+    if "volume" not in df.columns:
+        df["volume"] = np.nan
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce").ffill().fillna(0.0)
+    df = df.set_index("timestamp")
+    return df[["price", "market_cap", "volume"]]
 
 
 def clear_coingecko_bundle_cache() -> None:
@@ -77,17 +131,16 @@ def _fetch_market_chart_payload() -> Optional[dict]:
         if not r.ok:
             if r.status_code == 401:
                 logger.warning(
-                    "CoinGecko market_chart: HTTP 401 — без ключа API метод недоступен; "
-                    "задайте COINGECKO_DEMO_API_KEY или COINGECKO_PRO_API_KEY "
-                    "(см. https://www.coingecko.com/en/api ). "
-                    "Иначе MVRV/NUPL/SOPR останутся пустыми, если не включены Glassnode/LookIntoBitcoin."
+                    "CoinGecko market_chart: HTTP 401 — для CoinGeckoMarketDataSource.get_history "
+                    "нужен COINGECKO_DEMO_API_KEY или COINGECKO_PRO_API_KEY. "
+                    "Прокси §8.10 в приложении строится из build_market_history (FreeCrypto+БД), не из этого запроса."
                 )
             else:
                 logger.warning("CoinGecko market_chart: HTTP %s", r.status_code)
             return None
         return r.json()
     except Exception as e:
-        logger.warning("CoinGecko onchain proxy: ошибка запроса: %s", e)
+        logger.warning("CoinGecko market_chart: ошибка запроса: %s", e)
         return None
 
 
@@ -114,6 +167,13 @@ def _dataframe_from_payload(payload: dict) -> Optional[pd.DataFrame]:
     )
     df = df.set_index("ts")
     return df.dropna(subset=["price", "market_cap"])
+
+
+def _load_proxy_input_dataframe() -> Optional[pd.DataFrame]:
+    """План plan01: primary FreeCrypto + merge SQLite через build_market_history."""
+    days = _env_onchain_proxy_history_days()
+    hist = build_market_history("BTC", days)
+    return _dataframe_from_market_history(hist)
 
 
 def _enrich_810(df: pd.DataFrame) -> pd.DataFrame:
@@ -181,10 +241,10 @@ def _row_to_public_dict(df: pd.DataFrame) -> Dict[str, Any]:
         "mvrv_z_score": mvrv_z,
         "nupl": nupl_adj,
         "sopr": sopr_val,
-        "source": "coingecko",
-        "method": "market_chart_proxy",
+        "source": "market_history",
+        "method": "build_market_history_proxy",
         "confidence": round(PROXY_CONFIDENCE, 2),
-        "parser_version": "coingecko_v2",
+        "parser_version": "market_history_v1",
         "timestamp": ts,
         "source_score": round(PROXY_SOURCE_SCORE, 2),
         "cg_nupl_z": _last_finite(df["nupl_z"]),
@@ -201,17 +261,14 @@ def _row_to_public_dict(df: pd.DataFrame) -> Dict[str, Any]:
 
 def get_coingecko_810_dataframe() -> Optional[pd.DataFrame]:
     """
-    Полный дневной ряд §8.10 (все прокси и z-колонки) для бэктеста и калибровки — upgrade_plan S2 / plan.md §8.10.
+    Полный ряд §8.10 (все прокси и z-колонки) для бэктеста и калибровки — upgrade_plan S2 / plan.md §8.10.
 
-    Один HTTP-запрос к market_chart; кэш бандла (:func:`get_coingecko_810_bundle`) не заполняется.
+    Данные: :func:`build_market_history` (plan01); кэш бандла (:func:`get_coingecko_810_bundle`) не заполняется.
     """
     if not USE_COINGECKO_ONCHAIN:
-        logger.warning("CoinGecko onchain proxy выключен (USE_COINGECKO_ONCHAIN=false)")
+        logger.warning("Onchain proxy §8.10 выключен (USE_COINGECKO_ONCHAIN=false)")
         return None
-    payload = _fetch_market_chart_payload()
-    if not payload:
-        return None
-    df = _dataframe_from_payload(payload)
+    df = _load_proxy_input_dataframe()
     if df is None or df.empty:
         return None
     return _enrich_810(df)
@@ -219,13 +276,12 @@ def get_coingecko_810_dataframe() -> Optional[pd.DataFrame]:
 
 def get_coingecko_810_bundle(force_refresh: bool = False) -> Optional[Dict[str, Any]]:
     """
-    Полный бандл §8.10 за один HTTP-запрос (с кэшем).
-    Ключи cg_* — по рядам CoinGecko; mvrv_z_score/nupl/sopr — для fallback как раньше.
+    Полный бандл §8.10 (с кэшем): ряд из build_market_history → те же формулы, ключи cg_* без изменений.
     """
     global _bundle_time, _bundle_payload, _bundle_df
 
     if not USE_COINGECKO_ONCHAIN:
-        logger.debug("CoinGecko onchain proxy выключен (USE_COINGECKO_ONCHAIN=false)")
+        logger.debug("Onchain proxy §8.10 выключен (USE_COINGECKO_ONCHAIN=false)")
         return None
 
     now = datetime.now(timezone.utc)
@@ -237,11 +293,7 @@ def get_coingecko_810_bundle(force_refresh: bool = False) -> Optional[Dict[str, 
     ):
         return dict(_bundle_payload)
 
-    payload = _fetch_market_chart_payload()
-    if not payload:
-        return None
-
-    df = _dataframe_from_payload(payload)
+    df = _load_proxy_input_dataframe()
     if df is None or df.empty:
         return None
 
@@ -266,8 +318,8 @@ def get_coingecko_810_chart_frame(
     smooth_window: int = 7,
 ) -> Optional[pd.DataFrame]:
     """
-    Дневные цена и proxy composite §8.10 для UI (upgrade_plan P2 / plan.md §8.10).
-    Использует тот же кэш, что :func:`get_coingecko_810_bundle` — без лишнего HTTP.
+    Цена и proxy composite §8.10 для UI (upgrade_plan P2 / plan.md §8.10).
+    Использует тот же кэш, что :func:`get_coingecko_810_bundle` — без повторного build_market_history до истечения TTL.
     """
     get_coingecko_810_bundle()
     if _bundle_df is None or _bundle_df.empty:

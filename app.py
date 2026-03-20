@@ -237,7 +237,7 @@ def main():
         st.metric(
             "source",
             "—" if not o_src or o_src == "none" else str(o_src),
-            help="Источник сырья для тройки MVRV/NUPL/SOPR (glassnode, lookintobitcoin, coingecko, смесь).",
+            help="Источник сырья для тройки MVRV/NUPL/SOPR (market_history/proxy §8.10, glassnode, lookintobitcoin, смесь).",
         )
     with q2:
         st.metric(
@@ -255,7 +255,7 @@ def main():
         st.metric(
             "method",
             "—" if not o_meth else str(o_meth),
-            help="Способ получения: api, parse_fast, selenium и т.д.",
+            help="Способ получения: build_market_history_proxy, api, parse_fast, selenium и т.д.",
         )
     if (not o_src or o_src == "none") and has_onchain_vals:
         st.warning(

@@ -30,18 +30,22 @@ def test_composite_weights_sign_drawdown_term():
 
 
 def test_get_coingecko_810_dataframe_mocked():
-    """S2: полный DataFrame без сети (мок CoinGecko)."""
+    """S2: полный DataFrame без сети (мок build_market_history / plan01)."""
     import bit_trend.data.coingecko_onchain as cg
 
     n = 800
-    ts = [i * 86_400_000 for i in range(n)]
     base = 100.0 + np.arange(n) * 0.02
-    prices = [[ts[i], float(base[i])] for i in range(n)]
-    caps = [[ts[i], float(base[i] * 19e6)] for i in range(n)]
-    vols = [[ts[i], float(1e9 + i * 1e5)] for i in range(n)]
-    payload = {"prices": prices, "market_caps": caps, "total_volumes": vols}
+    ts = pd.date_range("2020-01-01", periods=n, freq="D", tz="UTC")
+    hist = pd.DataFrame(
+        {
+            "timestamp": ts,
+            "price": base,
+            "market_cap": base * 19e6,
+            "volume": 1e9 + np.arange(n) * 1e5,
+        }
+    )
 
-    with patch.object(cg, "_fetch_market_chart_payload", return_value=payload):
+    with patch.object(cg, "build_market_history", return_value=hist):
         df = cg.get_coingecko_810_dataframe()
     assert df is not None
     assert len(df) == n

@@ -82,19 +82,19 @@ Confidence: MEDIUM
 
 ## Переменные окружения
 
-**Обязательных ключей нет** — ончейн MVRV/NUPL/SOPR по умолчанию с CoinGecko `market_chart` (прокси §8.10); Glassnode и парсинг LookIntoBitcoin включаются флагами. Остальное: Binance/Bybit публичные эндпоинты, Alternative.me, Farside и т.д.
+**Обязательных ключей нет** — прокси MVRV/NUPL/SOPR (§8.10) строится из `build_market_history` (FreeCrypto + снимки SQLite `market_data`, plan01); для длинной истории желателен `FREECRYPTO_API_TOKEN` и/или ежедневный `collect_daily_snapshot`. Glassnode и LookIntoBitcoin — опциональное дозаполнение. Остальное: Binance/Bybit, Alternative.me, Farside и т.д.
 
 Создайте `.env` на основе `.env.example`. Кратко о группах:
 
 | Переменная | Описание |
 |------------|----------|
 | `FRED_API_KEY` | Fed Funds, 10Y, DXY (FRED `DTWEXBGS`), CPI — без ключа эти ряды недоступны; S&P всё равно подтягивается через yfinance |
-| `USE_GLASSNODE`, `GLASSNODE_API_KEY` | Дозаполнение ончейна после CoinGecko (по умолчанию Glassnode выключен) |
+| `USE_GLASSNODE`, `GLASSNODE_API_KEY` | Дозаполнение ончейна после proxy §8.10 (по умолчанию Glassnode выключен) |
 | `COINGLASS_API_KEY` | Данные ETF через Coinglass (иначе — парсинг Farside и т.п., см. код) |
 | `BITTREND_SCORING_CONFIG` | Путь к своему YAML со весами/порогами (по умолчанию встроенный `scoring.yaml`) |
 | `HTTP_RATE_MIN_INTERVAL_SEC`, `HTTP_MAX_RETRIES`, `HTTP_BACKOFF_*` | Лимиты и повторы HTTP |
 | `CACHE_TTL`, `CACHE_TTL_FAST`, `CACHE_TTL_SLOW` | TTL кэша: общий и раздельно для «быстрого» и «медленного» блоков данных |
-| `USE_COINGECKO_ONCHAIN`, `COINGECKO_*`, `COMPOSITE_810_*`, `SCORER_WEIGHT_COMPOSITE_810` | Основной proxy ончейна (§8.10) и веса composite |
+| `USE_COINGECKO_ONCHAIN`, `ONCHAIN_PROXY_*`, `COINGECKO_ONCHAIN_*`, `COMPOSITE_810_*`, `SCORER_WEIGHT_COMPOSITE_810` | Включение proxy §8.10 (ряд из `build_market_history`), мета доверия и веса composite; `COINGECKO_*` — ключи для fallback-провайдера market_chart |
 | `ONCHAIN_DRIFT_*` | S3: дрейф по истории LTB в SQLite (`detect_drift`) — предупреждение в алерте и снижение весов MVRV/NUPL/SOPR (детали в `scoring.yaml` → `onchain_drift`) |
 | `USE_SELENIUM`, `USE_LOOKINTOBITCOIN`, `LOOKINTOBITCOIN_*` | Дозаполнение ончейна парсингом LTB (по умолчанию выкл.), circuit breaker, пороги |
 | `BITTREND_DB_PATH` | Путь к SQLite (по умолчанию `data/bittrend.db`) |
@@ -146,10 +146,11 @@ BitTrend/
 
 | Метрика | Источник |
 |---------|----------|
-| Цена, MA200 | Binance API |
+| Цена spot (plan01), при необходимости cap/volume | Цепочка `MARKET_DATA_*` (по умолчанию FreeCrypto → fallback) |
+| MA200 | Binance API |
 | Funding, OI (среднее при двух источниках) | Binance API + Bybit API (публичные) |
-| MVRV, NUPL, SOPR | Glassnode (ключ) → LookIntoBitcoin (парсинг) → **fallback: прокси CoinGecko** (`coingecko_onchain`, §8.10) |
-| Volatility / drawdown / composite §8.10 | Ряды CoinGecko `market_chart` (тот же запрос, кэш бандла) |
+| MVRV, NUPL, SOPR | **Прокси §8.10** из `build_market_history` (FreeCrypto + SQLite); опционально Glassnode / LookIntoBitcoin дозаполняют пропуски |
+| Volatility / drawdown / composite §8.10 | Те же ряды price/cap/volume, что и proxy (кэш бандла `COINGECKO_BUNDLE_CACHE_SEC`) |
 | ETF flows | Coinglass (с `COINGLASS_API_KEY`) → иначе парсинг **Farside** (часто через Selenium + таблица на странице) |
 | Macro | FRED (ставки, 10Y, DXY `DTWEXBGS`, CPI при `FRED_API_KEY`); S&P 500 — **yfinance** |
 | Fear & Greed | Alternative.me |
