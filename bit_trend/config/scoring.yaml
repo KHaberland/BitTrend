@@ -1,0 +1,59 @@
+# BitTrend — веса скорера, пороги score→signal, аллокация BTC, веса §8.10 (CoinGecko composite).
+# Переопределение пути: переменная окружения BITTREND_SCORING_CONFIG (абсолютный или относительный путь).
+# Секреты API остаются в .env; числовые параметры ниже можно дополнительно переопределить через .env
+# (см. .env.example — те же имена, что раньше: SCORER_* , COMPOSITE_810_*).
+
+version: 1
+
+scorer:
+  weights:
+    mvrv_z: 0.25
+    nupl: 0.15
+    sopr: 0.10
+    ma200: 0.15
+    derivatives: 0.15
+    etf: 0.15
+    macro: 0.10
+    fear_greed: 0.05
+  composite_in_scorer:
+    weight: 0.0
+    scale: 40.0
+  signal_bands:
+    - min_score: 50
+      signal: BUY
+    - min_score: 10
+      signal: HOLD
+    - min_score: -10
+      signal: HOLD
+    - min_score: -30
+      signal: REDUCE
+  signal_default: EXIT
+
+allocation:
+  rows:
+    - min_score: 70
+      btc_pct: 95
+    - min_score: 50
+      btc_pct: 80
+    - min_score: 30
+      btc_pct: 65
+    - min_score: 10
+      btc_pct: 50
+    - min_score: -10
+      btc_pct: 40
+    - min_score: -29
+      btc_pct: 25
+    - min_score: -49
+      btc_pct: 15
+    - min_score: -100
+      btc_pct: 5
+  fallback_btc_pct: 5.0
+
+coingecko_composite:
+  w_mvrv: 0.30
+  w_nupl: 0.25
+  w_sopr: 0.20
+  w_drawdown: 0.25
+  w_volatility: -0.10
+  z_window: 365
+  z_min_periods: 30

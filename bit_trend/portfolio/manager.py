@@ -1,28 +1,22 @@
 """
 PortfolioManager — целевая аллокация BTC по score и расчёт отклонения.
+Таблица аллокации — bit_trend/config/scoring.yaml (E2).
 """
 
-from typing import Tuple
+from typing import Any, Optional, Tuple, TYPE_CHECKING
 
-# Таблица целевой аллокации BTC по score (plan.md)
-SCORE_TO_BTC_PCT = [
-    (70, 95),
-    (50, 80),
-    (30, 65),
-    (10, 50),
-    (-10, 40),
-    (-29, 25),
-    (-49, 15),
-    (-100, 5),
-]
+from bit_trend.config.loader import get_scoring_config
+
+if TYPE_CHECKING:
+    from bit_trend.config.loader import ScoringConfig
 
 
-def _score_to_btc_pct(score: float) -> float:
+def _score_to_btc_pct(score: float, cfg: "ScoringConfig") -> float:
     """Определить целевую долю BTC в портфеле по score."""
-    for threshold, pct in SCORE_TO_BTC_PCT:
-        if score >= threshold:
-            return float(pct)
-    return 5.0
+    for row in cfg.allocation:
+        if score >= row.min_score:
+            return float(row.btc_pct)
+    return float(cfg.allocation_fallback_btc_pct)
 
 
 class PortfolioManager:
@@ -30,9 +24,12 @@ class PortfolioManager:
     Управление портфелем: целевая доля BTC, отклонение от цели.
     """
 
+    def __init__(self, config: Optional["ScoringConfig"] = None) -> None:
+        self._cfg = config or get_scoring_config()
+
     def get_target_btc_pct(self, score: float) -> float:
         """Получить целевую долю BTC (%) по score."""
-        return _score_to_btc_pct(score)
+        return _score_to_btc_pct(score, self._cfg)
 
     def get_deviation(
         self,
@@ -62,3 +59,11 @@ class PortfolioManager:
         deviation_usdt = target_btc_value - btc_value_usdt
 
         return total, current_btc_pct, deviation_usdt
+
+
+def __getattr__(name: str) -> Any:
+    """SCORE_TO_BTC_PCT — как раньше список пар (порог, %), из YAML (для ноутбуков)."""
+    if name == "SCORE_TO_BTC_PCT":
+        cfg = get_scoring_config()
+        return [(r.min_score, r.btc_pct) for r in cfg.allocation]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

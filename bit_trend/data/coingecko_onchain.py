@@ -13,6 +13,8 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
+from bit_trend.config.loader import get_scoring_config
+
 from .http_client import http_get
 
 logger = logging.getLogger(__name__)
@@ -25,16 +27,6 @@ USE_COINGECKO_ONCHAIN = os.environ.get("USE_COINGECKO_ONCHAIN", "true").lower() 
 # Прокси-модель — ниже, чем у LTB/Glassnode; conservative meta для UI
 PROXY_CONFIDENCE = float(os.environ.get("COINGECKO_ONCHAIN_CONFIDENCE", "0.55"))
 PROXY_SOURCE_SCORE = float(os.environ.get("COINGECKO_ONCHAIN_SOURCE_SCORE", "0.52"))
-
-# §8.10 composite: веса z-метрик (сумма w_mvrv..w_dd ≈ 1; w_vol обычно отрицательный)
-W_COMP_MVRV = float(os.environ.get("COMPOSITE_810_W_MVRV", "0.30"))
-W_COMP_NUPL = float(os.environ.get("COMPOSITE_810_W_NUPL", "0.25"))
-W_COMP_SOPR = float(os.environ.get("COMPOSITE_810_W_SOPR", "0.20"))
-W_COMP_DD = float(os.environ.get("COMPOSITE_810_W_DRAWDOWN", "0.25"))
-W_COMP_VOL = float(os.environ.get("COMPOSITE_810_W_VOLATILITY", "-0.10"))
-
-_Z_WINDOW = int(os.environ.get("COMPOSITE_810_Z_WINDOW", "365"))
-_Z_MIN_PERIODS = int(os.environ.get("COMPOSITE_810_Z_MIN_PERIODS", "30"))
 
 _bundle_time: Optional[datetime] = None
 _bundle_payload: Optional[Dict[str, Any]] = None
@@ -106,7 +98,8 @@ def _dataframe_from_payload(payload: dict) -> Optional[pd.DataFrame]:
 
 def _enrich_810(df: pd.DataFrame) -> pd.DataFrame:
     """Все прокси и z-ряды по §8.10 (один проход по df)."""
-    zw, zmin = _Z_WINDOW, _Z_MIN_PERIODS
+    cg = get_scoring_config().coingecko_composite
+    zw, zmin = cg.z_window, cg.z_min_periods
 
     df = df.copy()
     df["supply"] = df["market_cap"] / df["price"].replace(0, np.nan)
@@ -140,11 +133,11 @@ def _enrich_810(df: pd.DataFrame) -> pd.DataFrame:
 
     # Глубокая просадка → вклад в сторону накопления (см. −drawdown_z в плане)
     df["composite_onchain"] = (
-        W_COMP_MVRV * df["mvrv_z"]
-        + W_COMP_NUPL * df["nupl_z"]
-        + W_COMP_SOPR * df["sopr_z"]
-        + W_COMP_DD * (-df["drawdown_z"])
-        + W_COMP_VOL * df["volatility_z"]
+        cg.w_mvrv * df["mvrv_z"]
+        + cg.w_nupl * df["nupl_z"]
+        + cg.w_sopr * df["sopr_z"]
+        + cg.w_drawdown * (-df["drawdown_z"])
+        + cg.w_volatility * df["volatility_z"]
     )
     return df
 
@@ -264,3 +257,24 @@ def get_coingecko_onchain_proxy() -> Optional[Dict[str, Any]]:
         "source_score",
     )
     return {k: bundle[k] for k in keys if k in bundle}
+
+
+_CG_LEGACY_ALIASES = {
+    "W_COMP_MVRV": "w_mvrv",
+    "W_COMP_NUPL": "w_nupl",
+    "W_COMP_SOPR": "w_sopr",
+    "W_COMP_DD": "w_drawdown",
+    "W_COMP_VOL": "w_volatility",
+}
+
+
+def __getattr__(name: str):
+    """Совместимость: веса и окна из scoring.yaml (переопределение через .env см. loader)."""
+    cg_attr = _CG_LEGACY_ALIASES.get(name)
+    if cg_attr is not None:
+        return getattr(get_scoring_config().coingecko_composite, cg_attr)
+    if name == "_Z_WINDOW":
+        return get_scoring_config().coingecko_composite.z_window
+    if name == "_Z_MIN_PERIODS":
+        return get_scoring_config().coingecko_composite.z_min_periods
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

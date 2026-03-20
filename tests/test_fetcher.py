@@ -3,8 +3,9 @@ Unit-тесты для DataFetcher.
 С моками внешних API.
 """
 
+import os
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from bit_trend.data import fetcher as fetcher_module
@@ -144,3 +145,98 @@ def test_clear_cache():
     assert fetcher_module._shared_fast_time is None
     assert fetcher_module._shared_slow_cache is None
     assert fetcher_module._shared_slow_time is None
+
+
+def test_empty_cache_ttl_fast_falls_back_to_constructor():
+    """Пустой CACHE_TTL_FAST в .env не ломает конструктор (D3)."""
+    with patch.dict(os.environ, {"CACHE_TTL_FAST": ""}, clear=False):
+        f = DataFetcher(ttl_seconds=123)
+    assert f.ttl_fast == timedelta(seconds=123)
+    with patch.dict(os.environ, {"CACHE_TTL_SLOW": "  "}, clear=False):
+        f2 = DataFetcher(ttl_seconds=60)
+    assert f2.ttl_slow == timedelta(seconds=3600)
+
+
+@patch("bit_trend.data.fetcher.get_coingecko_810_bundle", return_value=None)
+@patch("bit_trend.data.fetcher.get_etf_flows")
+@patch("bit_trend.data.fetcher.get_btc_onchain")
+@patch("bit_trend.data.fetcher.get_macro_data")
+@patch("bit_trend.data.fetcher.get_fear_greed_index")
+@patch("bit_trend.data.fetcher.get_btc_derivatives")
+@patch("bit_trend.data.fetcher.get_ma200")
+@patch("bit_trend.data.fetcher.get_btc_price")
+def test_only_fast_sources_when_slow_cache_still_valid(
+    mock_price,
+    mock_ma,
+    mock_deriv,
+    mock_fg,
+    mock_macro,
+    mock_onchain,
+    mock_etf,
+    mock_cg,
+):
+    """Истёк TTL только быстрого блока — макро/ончейн/ETF не дергаются (D3)."""
+    mock_price.return_value = 70800.0
+    mock_ma.return_value = 65000.0
+    mock_deriv.return_value = {}
+    mock_fg.return_value = {}
+
+    fetcher = DataFetcher(ttl_seconds=300)
+    m = _mock_fetch_all_sources()
+    m["macro_interpretation"] = "ok"
+    fast, slow = _split_fast_slow(m)
+    fetcher_module._shared_fast_cache = fast
+    fetcher_module._shared_fast_time = datetime.now() - timedelta(seconds=99999)
+    fetcher_module._shared_slow_cache = slow
+    fetcher_module._shared_slow_time = datetime.now()
+
+    fetcher.fetch_all(use_cache=True)
+
+    mock_macro.assert_not_called()
+    mock_onchain.assert_not_called()
+    mock_etf.assert_not_called()
+    mock_cg.assert_not_called()
+    mock_price.assert_called()
+
+
+@patch("bit_trend.data.fetcher.get_coingecko_810_bundle", return_value=None)
+@patch("bit_trend.data.fetcher.get_etf_flows")
+@patch("bit_trend.data.fetcher.get_btc_onchain")
+@patch("bit_trend.data.fetcher.get_macro_data")
+@patch("bit_trend.data.fetcher.get_fear_greed_index")
+@patch("bit_trend.data.fetcher.get_btc_derivatives")
+@patch("bit_trend.data.fetcher.get_ma200")
+@patch("bit_trend.data.fetcher.get_btc_price")
+def test_only_slow_sources_when_fast_cache_still_valid(
+    mock_price,
+    mock_ma,
+    mock_deriv,
+    mock_fg,
+    mock_macro,
+    mock_onchain,
+    mock_etf,
+    mock_cg,
+):
+    """Истёк TTL только медленного блока — цена/деривативы/F&G не запрашиваются снова (D3)."""
+    mock_macro.return_value = {"macro_signal": 0}
+    mock_onchain.return_value = {"mvrv_z_score": 1.0}
+    mock_etf.return_value = {}
+
+    fetcher = DataFetcher(ttl_seconds=300)
+    m = _mock_fetch_all_sources()
+    m["macro_interpretation"] = "ok"
+    fast, slow = _split_fast_slow(m)
+    fetcher_module._shared_fast_cache = fast
+    fetcher_module._shared_fast_time = datetime.now()
+    fetcher_module._shared_slow_cache = slow
+    fetcher_module._shared_slow_time = datetime.now() - timedelta(seconds=99999)
+
+    fetcher.fetch_all(use_cache=True)
+
+    mock_price.assert_not_called()
+    mock_ma.assert_not_called()
+    mock_deriv.assert_not_called()
+    mock_fg.assert_not_called()
+    mock_macro.assert_called()
+    mock_onchain.assert_called()
+    mock_etf.assert_called()

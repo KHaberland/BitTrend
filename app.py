@@ -175,9 +175,56 @@ def main():
     recommendation = st.session_state.recommendation or "—"
     st.info(f"**Recommended Action:** {recommendation}")
 
-    # Метрики по порядку (1, 2, 3, …)
+    # Метрики по порядку (1, 2, 3, …); качество ончейна — сразу видно (upgrade_plan D2)
     metrics_data = st.session_state.get("metrics_data") or data
     components = st.session_state.get("components") or {}
+
+    def _safe_float(x, default=None):
+        if x is None:
+            return default
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return default
+
+    o_src = metrics_data.get("onchain_source")
+    o_conf = _safe_float(metrics_data.get("onchain_confidence"))
+    o_ss = _safe_float(metrics_data.get("onchain_source_score"))
+    o_meth = metrics_data.get("onchain_method")
+
+    has_onchain_vals = any(
+        metrics_data.get(k) is not None for k in ("mvrv_z_score", "nupl", "sopr")
+    )
+    st.caption("**Качество ончейна (MVRV / NUPL / SOPR)** — plan.md §8.9")
+    q1, q2, q3, q4 = st.columns(4)
+    with q1:
+        st.metric(
+            "source",
+            "—" if not o_src or o_src == "none" else str(o_src),
+            help="Источник сырья для тройки MVRV/NUPL/SOPR (glassnode, lookintobitcoin, coingecko, смесь).",
+        )
+    with q2:
+        st.metric(
+            "confidence",
+            "—" if o_conf is None else f"{o_conf:.2f}",
+            help="Уверенность источника после учёта success_rate и свежести (LTB и др.).",
+        )
+    with q3:
+        st.metric(
+            "source_score",
+            "—" if o_ss is None else f"{o_ss:.2f}",
+            help="Итоговая оценка надёжности: success_rate×0.5 + confidence×0.3 + freshness×0.2.",
+        )
+    with q4:
+        st.metric(
+            "method",
+            "—" if not o_meth else str(o_meth),
+            help="Способ получения: api, parse_fast, selenium и т.д.",
+        )
+    if (not o_src or o_src == "none") and has_onchain_vals:
+        st.warning(
+            "Есть числа MVRV/NUPL/SOPR, но provenance не заполнен — проверьте цепочку get_btc_onchain / DataFetcher."
+        )
 
     def _fmt(val, fmt_str=".2f"):
         if val is None:
@@ -207,10 +254,6 @@ def main():
             weight_str = f" (вес {weight})" if weight else ""
             st.text(f"{num}. {name}{weight_str}: {raw_str}{comp_str}")
 
-    o_src = metrics_data.get("onchain_source")
-    o_conf = metrics_data.get("onchain_confidence")
-    o_ss = metrics_data.get("onchain_source_score")
-    o_meth = metrics_data.get("onchain_method")
     def _cg810_zone(z) -> str:
         """Дискретная зона по plan.md §8.10 (пороги по z-композиту, ориентир)."""
         if z is None:
@@ -236,13 +279,15 @@ def main():
                 "вклад этих метрик в score может опираться на «тишину» (нулевые компоненты)."
             )
         else:
+            conf_s = f"{o_conf:.2f}" if o_conf is not None else "—"
+            ss_s = f"{o_ss:.2f}" if o_ss is not None else "—"
             st.markdown(
-                f"**Источник:** `{o_src}`  \n"
-                f"**confidence:** `{o_conf}`  \n"
-                f"**source_score:** `{o_ss}`  \n"
+                f"**source:** `{o_src}`  \n"
+                f"**confidence:** `{conf_s}`  \n"
+                f"**source_score:** `{ss_s}`  \n"
                 f"**method:** `{o_meth or '—'}`"
             )
-            if o_ss is not None and float(o_ss) < 0.5:
+            if o_ss is not None and o_ss < 0.5:
                 st.caption("Низкий source_score — трактуйте MVRV/NUPL/SOPR осторожно (прокси или ухудшенный парсинг).")
 
     cg_c = metrics_data.get("cg_composite_onchain")
@@ -284,17 +329,22 @@ def main():
     cpi_y = metrics_data.get("cpi_yoy_pct")
     sp_raw = metrics_data.get("sp500")
     sp_ch = metrics_data.get("sp500_30d_change_pct")
-    if cpi_y is not None or sp_raw is not None:
-        with st.expander("🌐 Макро: CPI и S&P 500 (доп. к сигналу)"):
-            st.caption("CPI — FRED CPIAUCSL (г/г); S&P — yfinance ^GSPC (~30 торг. дней).")
-            if cpi_y is not None:
-                st.metric("CPI г/г", f"{cpi_y:.2f}%")
-            else:
-                st.caption("CPI: нет FRED_API_KEY или данных.")
-            if sp_raw is not None:
-                st.metric("S&P 500", f"{sp_raw:,.2f}", delta=f"{sp_ch:.2f}%" if sp_ch is not None else None)
-            else:
-                st.caption("S&P: не удалось загрузить (yfinance).")
+    macro_interp = metrics_data.get("macro_interpretation")
+    with st.expander("🌐 Макро §8.5: CPI и S&P 500 (приоритет отображения)"):
+        st.caption(
+            "**CPI** — FRED `CPIAUCSL` (г/г); **S&P 500** — yfinance `^GSPC` (~22 торг. дня к предыдущему якорю). "
+            "ФРС, DXY (FRED `DTWEXBGS`), 10Y — при `FRED_API_KEY`, они же питают общий `macro_signal`."
+        )
+        if cpi_y is not None:
+            st.metric("CPI г/г", f"{cpi_y:.2f}%")
+        else:
+            st.caption("CPI: нужен `FRED_API_KEY` и доступный месячный ряд FRED.")
+        if sp_raw is not None:
+            st.metric("S&P 500", f"{sp_raw:,.2f}", delta=f"{sp_ch:.2f}%" if sp_ch is not None else None)
+        else:
+            st.caption("S&P: не удалось загрузить (yfinance).")
+        if macro_interp:
+            st.caption(f"Интерпретация макросигнала: {macro_interp}")
 
     # Кнопки
     st.divider()

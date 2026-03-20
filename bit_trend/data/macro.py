@@ -1,6 +1,6 @@
 """
-Макроэкономика: ФРС, DXY, доходности 10Y.
-Опционально: FRED API (при наличии FRED_API_KEY).
+Макроэкономика: ФРС, DXY, 10Y (FRED), CPI г/г (FRED CPIAUCSL), S&P 500 (^GSPC, yfinance).
+Опционально: FRED_API_KEY для рядов FRED; S&P доступен без ключа.
 """
 
 import logging
@@ -22,15 +22,16 @@ SERIES_CPI = "CPIAUCSL"
 def _get_fred_observations(
     series_id: str,
     limit: int = 10,
-    sort_order: str = "desc"
+    sort_order: str = "desc",
+    days_back: int = 90,
 ) -> Optional[List[Dict]]:
-    """Получить последние наблюдения из FRED."""
+    """Получить последние наблюдения из FRED. Для месячных рядов задайте days_back ~550+."""
     api_key = os.environ.get("FRED_API_KEY")
     if not api_key:
         return None
     try:
         end = datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
         r = http_get(
             f"{FRED_BASE}/series/observations",
             params={
@@ -74,7 +75,8 @@ def _get_latest_fred(series_id: str) -> Optional[float]:
 
 def _get_cpi_level_and_yoy() -> Tuple[Optional[float], Optional[float]]:
     """Индекс CPI (уровень) и изменение г/г, %. FRED CPIAUCSL (§8.5)."""
-    obs = _get_fred_observations(SERIES_CPI, limit=14)
+    # Месячный ряд: нужно ≥14 точек с окном ~15 мес., иначе YoY недоступен
+    obs = _get_fred_observations(SERIES_CPI, limit=14, days_back=550)
     if not obs or len(obs) < 13:
         return None, None
     latest = _parse_fred_value(obs[0])
@@ -88,7 +90,7 @@ def _get_cpi_level_and_yoy() -> Tuple[Optional[float], Optional[float]]:
 
 
 def _get_sp500_level_and_30d_change() -> Tuple[Optional[float], Optional[float]]:
-    """S&P 500: уровень и изменение ~30 торговых дней (yfinance ^GSPC), plan §8.5."""
+    """S&P 500: уровень и изменение к закрытию ~22 торг. дня назад (yfinance ^GSPC), plan §8.5."""
     try:
         import yfinance as yf
         t = yf.Ticker("^GSPC")
@@ -118,47 +120,50 @@ def _interpret_macro(data: Dict) -> Tuple[int, str]:
     sp_chg = data.get("sp500_30d_change_pct")
 
     score = 0
-    parts = []
-
-    if fed is not None:
-        if fed < 4.0:
-            score += 1
-            parts.append("ФРС смягчает")
-        elif fed > 5.0:
-            score -= 1
-            parts.append("ФРС ужесточает")
-
-    if dxy_change is not None:
-        if dxy_change > 3:
-            score -= 1
-            parts.append("рост DXY")
-        elif dxy_change < -3:
-            score += 1
-            parts.append("падение DXY")
-
-    if treasury_10y is not None:
-        if treasury_10y > 4.5:
-            score -= 1
-            parts.append("высокие доходности 10Y")
-        elif treasury_10y < 3.0:
-            score += 1
-            parts.append("низкие доходности 10Y")
+    parts_cpi_sp: List[str] = []
+    parts_other: List[str] = []
 
     if cpi_yoy is not None:
         if cpi_yoy > 5.0:
             score -= 1
-            parts.append("высокий CPI г/г")
+            parts_cpi_sp.append("высокий CPI г/г")
         elif cpi_yoy < 2.5:
             score += 1
-            parts.append("умеренный CPI г/г")
+            parts_cpi_sp.append("умеренный CPI г/г")
 
     if sp_chg is not None:
         if sp_chg >= 4.0:
             score += 1
-            parts.append("S&P ~30д в плюсе")
+            parts_cpi_sp.append("S&P в плюсе (~1 мес. торг.)")
         elif sp_chg <= -7.0:
             score -= 1
-            parts.append("S&P ~30д под давлением")
+            parts_cpi_sp.append("S&P под давлением (~1 мес. торг.)")
+
+    if fed is not None:
+        if fed < 4.0:
+            score += 1
+            parts_other.append("ФРС смягчает")
+        elif fed > 5.0:
+            score -= 1
+            parts_other.append("ФРС ужесточает")
+
+    if dxy_change is not None:
+        if dxy_change > 3:
+            score -= 1
+            parts_other.append("рост DXY")
+        elif dxy_change < -3:
+            score += 1
+            parts_other.append("падение DXY")
+
+    if treasury_10y is not None:
+        if treasury_10y > 4.5:
+            score -= 1
+            parts_other.append("высокие доходности 10Y")
+        elif treasury_10y < 3.0:
+            score += 1
+            parts_other.append("низкие доходности 10Y")
+
+    parts = parts_cpi_sp + parts_other
 
     signal = max(-1, min(1, score))
     if signal > 0:
@@ -217,8 +222,12 @@ def get_macro_data() -> Optional[Dict]:
     result["sp500"] = sp_lvl
     result["sp500_30d_change_pct"] = sp_chg
 
+    sig, interp = _interpret_macro(result)
+    result["macro_signal"] = sig
     if not api_key:
-        result["interpretation"] = "нет FRED (ставки/DXY/10Y/CPI); S&P доступен без ключа"
-
-    result["macro_signal"], result["interpretation"] = _interpret_macro(result)
+        result["interpretation"] = (
+            "Без FRED_API_KEY недоступны ставки ФРС, 10Y, DXY и CPI. " + interp
+        )
+    else:
+        result["interpretation"] = interp
     return result

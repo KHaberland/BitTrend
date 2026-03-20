@@ -1,27 +1,17 @@
 """
 BitTrendScorer — расчёт score (-100..+100) и сигнала BUY/HOLD/REDUCE/EXIT.
-Метрики и веса по plan.md.
+Метрики и веса по plan.md; веса/пороги/аллокация — в bit_trend/config/scoring.yaml (E2).
 """
 import math
-import os
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, TYPE_CHECKING
 
-# Веса метрик (%)
-WEIGHT_MVRV_Z = 0.25
-WEIGHT_NUPL = 0.15
-WEIGHT_SOPR = 0.10
-WEIGHT_MA200 = 0.15
-WEIGHT_DERIVATIVES = 0.15
-WEIGHT_ETF = 0.15
-WEIGHT_MACRO = 0.10
-WEIGHT_FEAR_GREED = 0.05
+from bit_trend.config.loader import get_scoring_config
 
-# Опционально: вклад composite_onchain (z) из §8.10 — по умолчанию 0 (только UI), см. upgrade_plan S1
-WEIGHT_COMPOSITE_810 = float(os.environ.get("SCORER_WEIGHT_COMPOSITE_810", "0"))
-_COMPOSITE_810_SCALE = float(os.environ.get("SCORER_COMPOSITE_810_SCALE", "40"))
+if TYPE_CHECKING:
+    from bit_trend.config.loader import ScoringConfig
 
 
-def _composite_810_to_component(z: Optional[float]) -> float:
+def _composite_810_to_component(z: Optional[float], scale: float) -> float:
     """
     Согласование со шкалой скорера: по plan.md §8.10 низкий/отрицательный composite → зона BUY.
     Переводим в вклад -100..+100 (положительный = благоприятно для накопления BTC).
@@ -34,7 +24,7 @@ def _composite_810_to_component(z: Optional[float]) -> float:
         return 0.0
     if not math.isfinite(zf):
         return 0.0
-    return max(-100.0, min(100.0, -zf * _COMPOSITE_810_SCALE))
+    return max(-100.0, min(100.0, -zf * scale))
 
 
 def _metric_to_score(value: Optional[float], low_good: float, high_bad: float) -> float:
@@ -149,6 +139,9 @@ class BitTrendScorer:
     Расчёт итогового score (-100..+100) и сигнала BUY/HOLD/REDUCE/EXIT.
     """
 
+    def __init__(self, config: Optional["ScoringConfig"] = None) -> None:
+        self._cfg = config or get_scoring_config()
+
     def compute(self, data: Dict[str, Any]) -> Tuple[float, str, Dict[str, float]]:
         """
         Вычислить score и сигнал по данным из DataFetcher.
@@ -174,7 +167,9 @@ class BitTrendScorer:
         c_macro = _macro_to_component(data.get("macro_signal", 0))
         c_fg = _fear_greed_to_component(data.get("fear_greed_value"))
 
-        c_comp810 = _composite_810_to_component(data.get("cg_composite_onchain"))
+        w = self._cfg.weights
+        comp = self._cfg.composite_in_scorer
+        c_comp810 = _composite_810_to_component(data.get("cg_composite_onchain"), comp.scale)
 
         components = {
             "mvrv_z_score": c_mvrv,
@@ -189,17 +184,17 @@ class BitTrendScorer:
         }
 
         score = (
-            c_mvrv * WEIGHT_MVRV_Z
-            + c_nupl * WEIGHT_NUPL
-            + c_sopr * WEIGHT_SOPR
-            + c_ma200 * WEIGHT_MA200
-            + c_deriv * WEIGHT_DERIVATIVES
-            + c_etf * WEIGHT_ETF
-            + c_macro * WEIGHT_MACRO
-            + c_fg * WEIGHT_FEAR_GREED
+            c_mvrv * w.mvrv_z
+            + c_nupl * w.nupl
+            + c_sopr * w.sopr
+            + c_ma200 * w.ma200
+            + c_deriv * w.derivatives
+            + c_etf * w.etf
+            + c_macro * w.macro
+            + c_fg * w.fear_greed
         )
-        if WEIGHT_COMPOSITE_810 > 0:
-            score += c_comp810 * WEIGHT_COMPOSITE_810
+        if comp.weight > 0:
+            score += c_comp810 * comp.weight
 
         score = max(-100.0, min(100.0, score))
         signal = self._score_to_signal(score)
@@ -208,19 +203,31 @@ class BitTrendScorer:
 
     def _score_to_signal(self, score: float) -> str:
         """
-        Маппинг score → сигнал:
-        ≥ 50: BUY
-        10 … 49: HOLD (накопление)
-        -10 … 9: HOLD (осторожность)
-        -30 … -11: REDUCE
-        < -30: EXIT
+        Маппинг score → сигнал (границы в scoring.yaml, поле scorer.signal_bands).
         """
-        if score >= 50:
-            return "BUY"
-        if score >= 10:
-            return "HOLD"
-        if score >= -10:
-            return "HOLD"
-        if score >= -30:
-            return "REDUCE"
-        return "EXIT"
+        for band in self._cfg.signal_bands:
+            if score >= band.min_score:
+                return band.signal
+        return self._cfg.signal_default
+
+
+_LEGACY_WEIGHT_NAMES = {
+    "WEIGHT_MVRV_Z": "mvrv_z",
+    "WEIGHT_NUPL": "nupl",
+    "WEIGHT_SOPR": "sopr",
+    "WEIGHT_MA200": "ma200",
+    "WEIGHT_DERIVATIVES": "derivatives",
+    "WEIGHT_ETF": "etf",
+    "WEIGHT_MACRO": "macro",
+    "WEIGHT_FEAR_GREED": "fear_greed",
+}
+
+
+def __getattr__(name: str):
+    """Обратная совместимость для ноутбуков: веса из scoring.yaml."""
+    wkey = _LEGACY_WEIGHT_NAMES.get(name)
+    if wkey is not None:
+        return getattr(get_scoring_config().weights, wkey)
+    if name == "WEIGHT_COMPOSITE_810":
+        return get_scoring_config().composite_in_scorer.weight
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

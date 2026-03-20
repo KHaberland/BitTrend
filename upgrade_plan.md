@@ -13,7 +13,7 @@
 | D1 | **Третий fallback ончейна (CoinGecko)** — добавить зависимость, модуль с proxy MVRV/NUPL/SOPR по §8.10; вызывать из `get_btc_onchain()`, когда Glassnode и LookIntoBitcoin не дали пригодных значений. |
 | D2 | **Явный показ качества ончейна в UI** — вынести в интерфейс `confidence`, `source`, `source_score` из LTB (логика уже есть), по духу §8.9, чтобы «тишина» не считалась полноценными данными. |
 | D3 | **Разнесённые интервалы обновления (§8.7)** — вместо одного TTL на весь кэш: чаще цена/funding/OI, реже макро/ETF/ончейн (отдельные TTL по ключам в `DataFetcher` или аналоге). |
-| D4 | **Макро по плану §8.5** — при желании: CPI, S&P 500 (yfinance/FRED); сейчас в `macro.py` Fed Funds, 10Y, DXY (FRED `DTWEXBGS`, не Yahoo как в примере плана — при необходимости унифицировать формулировки с документом). |
+| D4 | **Макро §8.5** — `macro.py`: Fed Funds, 10Y, DXY (`DTWEXBGS`), **CPI г/г** (`CPIAUCSL`); **S&P 500** — yfinance `^GSPC`. Текст `plan.md` §8.5 и README согласованы (DXY в плане как Yahoo — в коде FRED по `upgrade_plan`). |
 
 ### Скоринг и методология
 
@@ -92,8 +92,8 @@
 ## Чеклист прогресса
 
 - [x] E1 Ретраи и лимиты
-- [ ] E2 Конфиг YAML/.env
-- [ ] E3 README
+- [x] E2 Конфиг YAML/.env
+- [x] E3 README
 - [x] D3 Раздельные TTL
 - [x] D1 CoinGecko fallback
 - [x] D4 Макро (опционально)

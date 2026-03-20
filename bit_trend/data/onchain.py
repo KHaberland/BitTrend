@@ -1,10 +1,12 @@
 """
 Он-чейн аналитика Bitcoin: MVRV Z-Score, NUPL, SOPR, Exchange flow.
 
-Источники (по приоритету):
+Источники для MVRV/NUPL/SOPR (по приоритету, дозаполнение пропусков):
 1. Glassnode API — при наличии GLASSNODE_API_KEY
-2. LookIntoBitcoin — парсинг (бесплатно, план 8.1)
-3. Blockchain.com — stats, active addresses
+2. LookIntoBitcoin — парсинг (пригодные confidence/source_score)
+3. CoinGecko — прокси по plan.md §8.10 (`market_chart`, см. coingecko_onchain)
+
+Дополнительно: Blockchain.com — tx/уникальные адреса (не заменяет метрики выше).
 """
 
 import logging

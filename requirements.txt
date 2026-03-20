@@ -1,11 +1,12 @@
 streamlit>=1.28.0
 beautifulsoup4>=4.12.0
 pandas>=2.0.0
+PyYAML>=6.0.0
 numpy>=1.24.0
 requests>=2.31.0
 plotly>=5.18.0
 python-dotenv>=1.0.0
-yfinance>=0.2.0    # DXY (Yahoo Finance)
+yfinance>=0.2.0    # S&P 500 (^GSPC); DXY в приложении — FRED DTWEXBGS (см. plan.md §8.5)
 jupyter>=1.0.0
 
 # Selenium — fallback для парсинга LookIntoBitcoin (динамические страницы)

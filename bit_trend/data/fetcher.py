@@ -19,6 +19,14 @@ from .coingecko_onchain import get_coingecko_810_bundle, clear_coingecko_bundle_
 logger = logging.getLogger(__name__)
 
 # Поля plan.md §8.10 (S1) — только из ряда CoinGecko, не перезаписывают MVRV/NUPL/SOPR из LTB/Glassnode
+def _env_ttl_seconds(name: str, default: int) -> int:
+    """Секунды TTL из env; пустая строка и пробелы считаются «не задано» (как в .env.example для CACHE_TTL_FAST)."""
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    return int(str(raw).strip())
+
+
 _CG810_RESULT_KEYS = (
     "cg_composite_onchain",
     "cg_mvrv_z",
@@ -52,10 +60,11 @@ class DataFetcher:
 
     def __init__(self, ttl_seconds: int = 300):
         """
-        ttl_seconds — TTL быстрого блока (как раньше). Медленный — CACHE_TTL_SLOW или 3600 с.
+        ttl_seconds — TTL быстрого блока по умолчанию (как CACHE_TTL в приложении).
+        Переопределение: CACHE_TTL_FAST, CACHE_TTL_SLOW (пустое значение = взять default выше / 3600).
         """
-        fast = int(os.getenv("CACHE_TTL_FAST", str(ttl_seconds)))
-        slow = int(os.getenv("CACHE_TTL_SLOW", "3600"))
+        fast = _env_ttl_seconds("CACHE_TTL_FAST", ttl_seconds)
+        slow = _env_ttl_seconds("CACHE_TTL_SLOW", 3600)
         self.ttl_fast = timedelta(seconds=fast)
         self.ttl_slow = timedelta(seconds=slow)
 
