@@ -72,6 +72,19 @@ def test_env_overrides_composite_weights(monkeypatch, tmp_path: Path):
 
 
 def test_custom_config_path(monkeypatch, tmp_path: Path):
+    # Иначе .env / переменные процесса (COMPOSITE_810_*) перезапишут YAML после load_dotenv().
+    monkeypatch.setattr("bit_trend.config.loader._try_load_dotenv", lambda: None)
+    for key in (
+        "COMPOSITE_810_W_MVRV",
+        "COMPOSITE_810_W_NUPL",
+        "COMPOSITE_810_W_SOPR",
+        "COMPOSITE_810_W_DRAWDOWN",
+        "COMPOSITE_810_W_VOLATILITY",
+        "COMPOSITE_810_Z_WINDOW",
+        "COMPOSITE_810_Z_MIN_PERIODS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
     minimal = {
         "version": 1,
         "scorer": {
